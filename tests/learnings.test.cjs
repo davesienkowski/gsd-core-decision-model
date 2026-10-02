@@ -19,6 +19,9 @@ const {
   learningsDelete,
   learningsCopyFromProject,
   learningsPrune,
+  copyWithSameAsSuggestions,
+  planSameAsDecisions,
+  MAX_SAME_AS_PAIRS,
 } = require('../gsd-core/bin/lib/learnings.cjs');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
@@ -796,5 +799,299 @@ describe('#3683 completion wiring and registry pins', () => {
       /global_learnings|automatically/i.test(section),
       'the learnings feature section must acknowledge the gated automatic path',
     );
+  });
+});
+
+// ─── Decision-model same-as suggestions (261001-o30 D11 site #9) ─────────────
+
+const SAME_LINE = 'decided-by: decision-model (conf 0.90, backend openai-letter)';
+
+/** A call-counting fake decide that validates the batch shape; `answerFor(id, request)` picks each answer. */
+function fakeSameDecide(answerFor) {
+  const calls = [];
+  const fn = (request) => {
+    calls.push(request);
+    return {
+      backend: 'openai-letter',
+      model: 'fake',
+      results: request.requests.map((r) => ({ id: r.id, answers: { same: answerFor(r.id, r) } })),
+    };
+  };
+  fn.calls = calls;
+  return fn;
+}
+const OK_YES = () => ({ status: 'ok', answer: 'yes', p_yes: 0.9, confidence: 0.9 });
+
+describe('copyWithSameAsSuggestions (decision-model fallthrough, 261001-o30 D11 site #9)', () => {
+  let storeDir;
+  let projectDir;
+  beforeEach(() => {
+    storeDir = makeTempDir();
+    projectDir = makeTempDir();
+  });
+  afterEach(() => {
+    cleanupDir(storeDir);
+    cleanupDir(projectDir);
+  });
+
+  const md = (items) => `# Learnings\n\n## Lessons\n\n${items.map(([t, b]) => `### ${t}\n${b}`).join('\n\n')}\n`;
+  const storeBytes = () => Object.fromEntries(
+    fs.readdirSync(storeDir).map((f) => [f, fs.readFileSync(path.join(storeDir, f), 'utf-8')]),
+  );
+
+  test('a paraphrase of a stored learning gets a same_as suggestion and no store file changes', () => {
+    assert.strictEqual(typeof copyWithSameAsSuggestions, 'function');
+    const l1 = learningsWrite({
+      source_project: 'other',
+      context: 'Retry policy for flaky network calls',
+      learning: 'Retry network calls with exponential backoff and jitter',
+    }, { storeDir });
+    const before = storeBytes();
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), md([
+      ['Network retries', 'Use jitter and exponential backoff when retrying a flaky network call'],
+    ]), 'utf-8');
+
+    const decide = fakeSameDecide(OK_YES);
+    const result = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide });
+
+    assert.strictEqual(decide.calls.length, 1);
+    assert.strictEqual(decide.calls[0].requests.length, 1);
+    assert.deepStrictEqual(Object.keys(decide.calls[0].requests[0].questions), ['same']);
+    const added = learningsList({ storeDir }).find((r) => r.id !== l1.id);
+    assert.ok(added, 'the new learning is still written');
+    assert.deepStrictEqual(result, {
+      total: 1, created: 1, skipped: 0,
+      same_as_suggestions: [{ id: added.id, same_as: l1.id, decided_by: SAME_LINE }],
+    });
+    const after = storeBytes();
+    assert.strictEqual(after[`${l1.id}.json`], before[`${l1.id}.json`]);
+    assert.deepStrictEqual(Object.keys(after).sort(), [`${l1.id}.json`, `${added.id}.json`].sort());
+    assert.deepStrictEqual(Object.keys(JSON.parse(after[`${added.id}.json`])).sort(),
+      ['content_hash', 'context', 'date', 'id', 'learning', 'source_project', 'tags']);
+    assert.strictEqual(fs.existsSync(path.join(projectDir, '.gsd-trace.jsonl')), false);
+    assert.strictEqual(fs.existsSync(path.join(storeDir, '.gsd-trace.jsonl')), false);
+  });
+
+  const seed = () => learningsWrite({
+    source_project: 'other',
+    context: 'Retry policy for flaky network calls',
+    learning: 'Retry network calls with exponential backoff and jitter',
+  }, { storeDir });
+  const PARAPHRASE = md([['Network retries', 'Use jitter and exponential backoff when retrying a flaky network call']]);
+  const plainCounts = (r) => ({ total: r.total, created: r.created, skipped: r.skipped });
+
+  test('an exact content-hash duplicate is still skipped and counted, and never asks the model', () => {
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), PARAPHRASE, 'utf-8');
+    learningsCopyFromProject(projectDir, { storeDir, sourceProject: 'app' });
+    seed();
+    const decide = fakeSameDecide(OK_YES);
+    const second = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide });
+    assert.deepStrictEqual(second, { total: 1, created: 0, skipped: 1 });
+    assert.strictEqual(decide.calls.length, 0);
+    assert.strictEqual(learningsList({ storeDir }).length, 2);
+  });
+
+  test('no pre-existing candidate: no call and the result has no new keys', () => {
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), md([['A', 'alpha beta gamma'], ['B', 'alpha beta gamma delta']]), 'utf-8');
+    const decide = fakeSameDecide(OK_YES);
+    const result = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide });
+    assert.deepStrictEqual(result, { total: 2, created: 2, skipped: 0 });
+    assert.strictEqual(decide.calls.length, 0);
+  });
+
+  test('no LEARNINGS.md: zero counts, no call', () => {
+    const decide = fakeSameDecide(OK_YES);
+    assert.deepStrictEqual(copyWithSameAsSuggestions(projectDir, { storeDir, decide }), { total: 0, created: 0, skipped: 0 });
+    assert.strictEqual(decide.calls.length, 0);
+  });
+
+  test('an existing store with no lexical overlap makes no call', () => {
+    learningsWrite({ source_project: 'other', context: 'zzz', learning: 'qqq www' }, { storeDir });
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), md([['Network retries', 'jitter backoff']]), 'utf-8');
+    const decide = fakeSameDecide(OK_YES);
+    assert.deepStrictEqual(copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide }), { total: 1, created: 1, skipped: 0 });
+    assert.strictEqual(decide.calls.length, 0);
+  });
+
+  test('decide null (capability inactive) is exactly learningsCopyFromProject, byte for byte', () => {
+    seed();
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), PARAPHRASE, 'utf-8');
+    const result = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide: null });
+    assert.deepStrictEqual(Object.keys(result), ['total', 'created', 'skipped']);
+    assert.deepStrictEqual(result, { total: 1, created: 1, skipped: 0 });
+  });
+
+  test('abstain, no-answers, null and garbage responses leave the plain result with no new keys', () => {
+    seed();
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), PARAPHRASE, 'utf-8');
+    const decides = [
+      () => ({ results: [{ id: 'p0', answers: { same: { status: 'abstain', reason: 'low-confidence', confidence: 0.4 } } }] }),
+      () => ({ results: [{ id: 'p0', answers: { same: { status: 'ok', answer: 'no', confidence: 0.99 } } }] }),
+      () => null, () => 'x', () => ({}), () => ({ results: [{ id: 'p0' }] }),
+      () => ({ results: [{ id: '__proto__', answers: { same: { status: 'ok', answer: 'yes', confidence: 1 } } }] }),
+      () => ({ results: [{ id: 'p0', answers: { same: { status: 'abstain' } } }] }),
+    ];
+    let n = 0;
+    for (const decide of decides) {
+      // A fresh store/project per attempt, because the first copy would otherwise dedupe the second.
+      const sd = makeTempDir();
+      const pd = makeTempDir();
+      try {
+        learningsWrite({ source_project: 'other', context: 'Retry policy for flaky network calls', learning: 'Retry network calls with exponential backoff and jitter' }, { storeDir: sd });
+        fs.writeFileSync(path.join(pd, 'LEARNINGS.md'), PARAPHRASE, 'utf-8');
+        const result = copyWithSameAsSuggestions(pd, { storeDir: sd, sourceProject: 'app', decide });
+        assert.deepStrictEqual(Object.keys(result), ['total', 'created', 'skipped'], `response #${n}`);
+      } finally { cleanupDir(sd); cleanupDir(pd); n++; }
+    }
+  });
+
+  test('over the cap: 24 pairs go in one call and the overflow is reported once a pair is answered ok', () => {
+    learningsWrite({ source_project: 'other', context: 'E1', learning: 'alpha beta gamma' }, { storeDir });
+    learningsWrite({ source_project: 'other', context: 'E2', learning: 'alpha beta delta' }, { storeDir });
+    const items = [];
+    for (let i = 0; i < 13; i++) items.push([`New ${i}`, `alpha beta unique${i}x`]);
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), md(items), 'utf-8');
+    const no = fakeSameDecide(() => ({ status: 'ok', answer: 'no', p_yes: 0.05, confidence: 0.95 }));
+    const result = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide: no });
+    assert.strictEqual(no.calls.length, 1);
+    assert.strictEqual(no.calls[0].requests.length, MAX_SAME_AS_PAIRS);
+    assert.deepStrictEqual(no.calls[0].requests.map((r) => r.id), Array.from({ length: 24 }, (_, i) => `p${i}`));
+    assert.strictEqual(result.created, 13);
+    assert.strictEqual(result.same_as_unchecked, 2);
+    assert.strictEqual('same_as_suggestions' in result, false);
+  });
+
+  test('over the cap with only abstain answers carries no same_as_unchecked key', () => {
+    learningsWrite({ source_project: 'other', context: 'E1', learning: 'alpha beta gamma' }, { storeDir });
+    learningsWrite({ source_project: 'other', context: 'E2', learning: 'alpha beta delta' }, { storeDir });
+    const items = [];
+    for (let i = 0; i < 13; i++) items.push([`New ${i}`, `alpha beta unique${i}x`]);
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), md(items), 'utf-8');
+    const abstain = fakeSameDecide(() => ({ status: 'abstain', reason: 'unreachable' }));
+    const result = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide: abstain });
+    assert.strictEqual(abstain.calls.length, 1);
+    assert.deepStrictEqual(Object.keys(result), ['total', 'created', 'skipped']);
+  });
+
+  test('a yes answer for only some pairs suggests exactly those, in ranked order', () => {
+    const l1 = seed();
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), PARAPHRASE, 'utf-8');
+    const decide = fakeSameDecide((id) => (id === 'p0'
+      ? { status: 'ok', answer: 'yes', p_yes: 0.99, confidence: 0.99 }
+      : { status: 'ok', answer: 'no', p_yes: 0.01, confidence: 0.99 }));
+    const result = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide });
+    assert.strictEqual(result.same_as_suggestions.length, 1);
+    assert.strictEqual(result.same_as_suggestions[0].same_as, l1.id);
+    assert.strictEqual(result.same_as_suggestions[0].decided_by, 'decided-by: decision-model (conf 0.99, backend openai-letter)');
+  });
+
+  test('every store file is byte-identical across the suggestion step and no trace file appears', () => {
+    seed();
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), PARAPHRASE, 'utf-8');
+    const noModel = makeTempDir();
+    try {
+      const seeded = learningsList({ storeDir });
+      for (const r of seeded) fs.writeFileSync(path.join(noModel, `${r.id}.json`), JSON.stringify(r, null, 2));
+      const withModel = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide: fakeSameDecide(OK_YES) });
+      const plain = learningsCopyFromProject(projectDir, { storeDir: noModel, sourceProject: 'app' });
+      assert.deepStrictEqual(plainCounts(withModel), plain);
+      const norm = (dir) => fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8')))
+        .map((r) => { const copy = { ...r }; delete copy.id; delete copy.date; return copy; }).sort((a, b) => a.content_hash.localeCompare(b.content_hash));
+      assert.deepStrictEqual(norm(storeDir), norm(noModel));
+      assert.deepStrictEqual(fs.readdirSync(storeDir).filter((f) => !f.endsWith('.json')), []);
+    } finally { cleanupDir(noModel); }
+  });
+});
+
+describe('planSameAsDecisions (pure planner)', () => {
+  const rec = (id, context, learning) => ({
+    id, source_project: 'p', date: '2026-01-01T00:00:00.000Z', context, learning, tags: [], content_hash: `h-${id}`,
+  });
+
+  test('null for no created learnings, no existing ones, or no lexical overlap', () => {
+    assert.strictEqual(planSameAsDecisions([], [rec('e1', 'x', 'y')]), null);
+    assert.strictEqual(planSameAsDecisions([rec('c1', 'x', 'y')], []), null);
+    assert.strictEqual(planSameAsDecisions([rec('c1', 'alpha', 'beta')], [rec('e1', 'gamma', 'delta')]), null);
+    assert.strictEqual(planSameAsDecisions([rec('c1', 'the', 'a an')], [rec('e1', 'the', 'a an')]), null, 'stop words only carry no tokens');
+  });
+
+  test('top two existing by Jaccard, ties by existing id ascending, never a created record or itself', () => {
+    const created = [rec('c1', 'x', 'y'), rec('c2', 'x', 'y')];
+    const existing = [rec('e4', 'x', 'w'), rec('e2', 'x', 'z'), rec('e1', 'x', 'y'), rec('e3', 'q', 'r'), created[0], created[1]];
+    const plan = planSameAsDecisions(created, existing);
+    assert.deepStrictEqual(plan.pairs, [
+      { id: 'c1', same_as: 'e1' }, { id: 'c2', same_as: 'e1' },
+      { id: 'c1', same_as: 'e2' }, { id: 'c2', same_as: 'e2' },
+    ]);
+    assert.strictEqual(plan.unchecked, 0);
+    assert.deepStrictEqual(plan.request.requests.map((r) => r.id), ['p0', 'p1', 'p2', 'p3']);
+    for (const pair of plan.pairs) assert.ok(!['c1', 'c2'].includes(pair.same_as));
+  });
+
+  test('ranked by Jaccard descending, state is the fixed two-part text, capped at 24 with the overflow counted', () => {
+    const created = [];
+    for (let i = 0; i < 13; i++) created.push(rec(`c${String(i).padStart(2, '0')}`, 'alpha beta', `u${i}`));
+    const existing = [rec('e1', 'alpha beta', 'gamma'), rec('e2', 'alpha beta', 'delta')];
+    const plan = planSameAsDecisions(created, existing);
+    assert.strictEqual(plan.pairs.length, 24);
+    assert.strictEqual(plan.unchecked, 2);
+    assert.deepStrictEqual(plan.pairs.slice(0, 3), [
+      { id: 'c00', same_as: 'e1' }, { id: 'c00', same_as: 'e2' }, { id: 'c01', same_as: 'e1' },
+    ]);
+    assert.strictEqual(plan.request.requests[0].state, 'Learning A:\nalpha beta\nu0\n\nLearning B:\nalpha beta\ngamma');
+    assert.strictEqual(plan.request.requests[0].questions.same.type, 'noul');
+    assert.ok(Object.isFrozen(plan.request.requests[0].questions.same));
+  });
+
+  test('a higher-Jaccard pair outranks a lower one regardless of id order', () => {
+    const created = [rec('c1', 'a b c d', 'e'), rec('c2', 'a b', 'c')];
+    const existing = [rec('e1', 'a', 'z1 z2 z3'), rec('e2', 'a b c d', 'e')];
+    const plan = planSameAsDecisions(created, existing);
+    assert.deepStrictEqual(plan.pairs[0], { id: 'c1', same_as: 'e2' });
+  });
+});
+
+describe('learnings copy CLI stays deterministic off or unreachable (261001-o30 D11 site #9)', () => {
+  const net = require('node:net');
+  const cleanups = [];
+  afterEach(() => { while (cleanups.length) cleanup(cleanups.pop()); });
+
+  function closedPort() {
+    return new Promise((resolve) => {
+      const srv = net.createServer();
+      srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+    });
+  }
+
+  function copyIn(decisionModel, seedStore) {
+    const dir = createTempProject();
+    const home = makeTempDir();
+    cleanups.push(dir, home);
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ decision_model: decisionModel }));
+    fs.writeFileSync(path.join(dir, '.planning', 'LEARNINGS.md'),
+      '# L\n\n## Lessons\n\n### Network retries\nUse jitter and exponential backoff when retrying a flaky network call\n');
+    if (seedStore) {
+      learningsWrite({
+        source_project: 'other',
+        context: 'Retry policy for flaky network calls',
+        learning: 'Retry network calls with exponential backoff and jitter',
+      }, { storeDir: path.join(home, '.gsd', 'knowledge') });
+    }
+    const res = runGsdTools(['learnings', 'copy'], dir, { HOME: home, USERPROFILE: home, GSD_HOME: home });
+    return { res, dir };
+  }
+
+  test('decision_model disabled prints exactly { total, created, skipped }', () => {
+    const { res, dir } = copyIn({ enabled: false }, true);
+    assert.strictEqual(res.success, true, res.error);
+    assert.deepStrictEqual(JSON.parse(res.output), { total: 1, created: 1, skipped: 0 });
+    assert.strictEqual(fs.existsSync(path.join(dir, '.gsd-trace.jsonl')), false);
+  });
+
+  test('decision_model enabled against an unreachable backend prints the identical payload', async () => {
+    const port = await closedPort();
+    const { res } = copyIn({ enabled: true, model: 'fake-model', base_url: `http://127.0.0.1:${port}`, timeout_ms: 2000 }, true);
+    assert.strictEqual(res.success, true, res.error);
+    assert.deepStrictEqual(JSON.parse(res.output), { total: 1, created: 1, skipped: 0 });
   });
 });

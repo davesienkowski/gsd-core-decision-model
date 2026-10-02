@@ -13,6 +13,14 @@
  * ADR-457 build-at-publish: the hand-written bin/lib/learnings.cjs collapsed
  * to a TypeScript source of truth. Behaviour is preserved byte-for-behaviour
  * from the prior hand-written .cjs; only strict types are added.
+ *
+ * Decision-model same-as suggestions (quick 261001-wzs, D11 site #9): `learningsCopyFromProject`
+ * and its exact content-hash dedupe are unchanged. `copyWithSameAsSuggestions` wraps the copy and,
+ * only when the optional decision-model capability is active, asks ONE batched question about the
+ * newly created learnings versus the lexically closest pre-existing ones ("do these state the same
+ * lesson?"). The answer is ADD-ONLY: it appears as `same_as_suggestions` in the returned object
+ * (each with a decided-by line). It never writes, merges, renames or deletes a store file, so a
+ * human decides what to do with the suggestion (D7, D11).
  */
 
 import fs from 'node:fs';
@@ -26,6 +34,15 @@ import os from 'node:os';
 import ioMod = require('./io.cjs');
 const { output, error: coreError } = ioMod;
 import { platformWriteSync } from './shell-command-projection.cjs';
+import {
+  type DecideOpts,
+  type DecisionBatchRequest,
+  answersFor,
+  answerOf,
+  okYes,
+  decidedBy,
+  resolveSiteDecide,
+} from './decision-model-fallthrough.cjs';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -63,6 +80,29 @@ interface CopyResult {
   skipped: number;
 }
 
+interface SameAsSuggestion {
+  id: string;
+  same_as: string;
+  decided_by: string;
+}
+
+interface CopyWithSuggestionsResult extends CopyResult {
+  same_as_suggestions?: SameAsSuggestion[];
+  same_as_unchecked?: number;
+}
+
+interface SameAsPair {
+  id: string;
+  same_as: string;
+}
+
+interface SameAsPlan {
+  request: DecisionBatchRequest;
+  pairs: SameAsPair[];
+  /** Candidate pairs over the cap that were not asked about. */
+  unchecked: number;
+}
+
 interface PruneResult {
   removed: number;
   kept: number;
@@ -71,6 +111,24 @@ interface PruneResult {
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const DEFAULT_STORE_DIR = path.join(os.homedir(), '.gsd', 'knowledge');
+
+/** At most this many candidate pairs go into the single batched same-as call (D11 site #9). */
+const MAX_SAME_AS_PAIRS = 24;
+
+/** Closest pre-existing learnings considered per new learning. */
+const SAME_AS_CANDIDATES_PER_LEARNING = 2;
+
+/** The fixed same-as question. The untrusted learning text goes only in the request `state` (ADR-1577). */
+const SAME_AS_QUESTION = Object.freeze({
+  type: 'noul' as const,
+  instructions: 'Do Learning A and Learning B state the same lesson, so that keeping both adds nothing new?',
+});
+
+// Mirrors gsd-core/workflows/graduation.md Step 3 (tokenizer and stop words).
+const STOP_WORDS: ReadonlySet<string> = new Set([
+  'a', 'an', 'the', 'is', 'was', 'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'but',
+  'with', 'from', 'that', 'this', 'by', 'as',
+]);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -243,7 +301,10 @@ function resolveLearningsSource(planningDir: string): string | null {
   return fs.existsSync(rootPath) ? rootPath : null;
 }
 
-function learningsCopyFromProject(planningDir: string, opts?: WriteOpts & { sourceProject?: string }): CopyResult {
+function learningsCopyFromProject(
+  planningDir: string,
+  opts?: WriteOpts & { sourceProject?: string; createdIds?: string[] },
+): CopyResult {
   const learningsPath = resolveLearningsSource(planningDir);
   if (learningsPath === null) {
     return { total: 0, created: 0, skipped: 0 };
@@ -289,8 +350,10 @@ function learningsCopyFromProject(planningDir: string, opts?: WriteOpts & { sour
       context: title,
       tags,
     }, { ...opts, dedupeIndex });
-    if (result.created) created++;
-    else skipped++;
+    if (result.created) {
+      created++;
+      if (opts && opts.createdIds) opts.createdIds.push(result.id);
+    } else skipped++;
   };
 
   for (const section of sections) {
@@ -317,6 +380,108 @@ function learningsCopyFromProject(planningDir: string, opts?: WriteOpts & { sour
   }
 
   return { total: created + skipped, created, skipped };
+}
+
+// ─── Decision-model same-as suggestions (D11 site #9) ────────────────────────
+
+/** Lowercase, strip punctuation, split on whitespace, drop stop words (graduation.md Step 3). */
+function lexicalTokens(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const w of text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').split(/\s+/)) {
+    if (w.length > 0 && !STOP_WORDS.has(w)) out.add(w);
+  }
+  return out;
+}
+
+/** Jaccard similarity |A ∩ B| / |A ∪ B| over token sets (0 when both are empty). */
+function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+function learningTokens(r: LearningRecord): Set<string> {
+  return lexicalTokens(`${r.context} ${r.learning}`);
+}
+
+function pairState(a: LearningRecord, b: LearningRecord): string {
+  return `Learning A:\n${a.context}\n${a.learning}\n\nLearning B:\n${b.context}\n${b.learning}`;
+}
+
+/**
+ * Pure planner. For each newly created learning takes the top two pre-existing learnings by Jaccard
+ * (above 0) over context plus learning tokens; a new learning is never paired with itself or with
+ * another learning created in the same copy. Pairs are ranked by Jaccard descending, then new id,
+ * then existing id ascending, and capped at {@link MAX_SAME_AS_PAIRS}. Returns null for no pairs.
+ */
+function planSameAsDecisions(created: LearningRecord[], existing: LearningRecord[]): SameAsPlan | null {
+  if (created.length === 0 || existing.length === 0) return null;
+  const createdIds = new Set(created.map((r) => r.id));
+  const pool = existing.filter((r) => !createdIds.has(r.id));
+  if (pool.length === 0) return null;
+  const poolTokens = pool.map(learningTokens);
+  const scored: Array<{ a: LearningRecord; b: LearningRecord; sim: number }> = [];
+  for (const a of created) {
+    const aTokens = learningTokens(a);
+    const candidates: Array<{ b: LearningRecord; sim: number }> = [];
+    pool.forEach((b, i) => {
+      const sim = jaccard(aTokens, poolTokens[i]);
+      if (sim > 0) candidates.push({ b, sim });
+    });
+    candidates.sort((x, y) => y.sim - x.sim || (x.b.id < y.b.id ? -1 : x.b.id > y.b.id ? 1 : 0));
+    for (const c of candidates.slice(0, SAME_AS_CANDIDATES_PER_LEARNING)) {
+      scored.push({ a, b: c.b, sim: c.sim });
+    }
+  }
+  if (scored.length === 0) return null;
+  scored.sort((x, y) => y.sim - x.sim
+    || (x.a.id < y.a.id ? -1 : x.a.id > y.a.id ? 1 : 0)
+    || (x.b.id < y.b.id ? -1 : x.b.id > y.b.id ? 1 : 0));
+  const asked = scored.slice(0, MAX_SAME_AS_PAIRS);
+  return {
+    request: {
+      requests: asked.map((p, i) => ({ id: `p${i}`, state: pairState(p.a, p.b), questions: { same: SAME_AS_QUESTION } })),
+    },
+    pairs: asked.map((p) => ({ id: p.a.id, same_as: p.b.id })),
+    unchecked: scored.length - asked.length,
+  };
+}
+
+/**
+ * `learningsCopyFromProject` plus add-only same-as suggestions (D11 site #9, D14, D18). The copy,
+ * its counts and its exact content-hash dedupe are exactly as before. The result gains keys only
+ * when the capability is active and the model answered: `same_as_suggestions` (each with a
+ * decided-by line) when it said yes, and `same_as_unchecked` (the over-cap pair count) when at
+ * least one answer came back ok. Nothing is written, merged, renamed or deleted.
+ */
+function copyWithSameAsSuggestions(
+  planningDir: string,
+  opts: WriteOpts & { sourceProject?: string } & DecideOpts = {},
+): CopyWithSuggestionsResult {
+  const createdIds: string[] = [];
+  const result: CopyWithSuggestionsResult = learningsCopyFromProject(planningDir, { ...opts, createdIds });
+  if (createdIds.length === 0) return result;
+  const created: LearningRecord[] = [];
+  for (const id of createdIds) {
+    const record = learningsRead(id, opts);
+    if (record !== null) created.push(record);
+  }
+  const plan = planSameAsDecisions(created, learningsList(opts));
+  if (plan === null) return result;
+  const decide = resolveSiteDecide(opts);
+  if (decide === null) return result;
+  const response = decide(plan.request);
+  const suggestions: SameAsSuggestion[] = [];
+  let anyOk = false;
+  plan.pairs.forEach((pair, i) => {
+    const answer = answerOf(answersFor(response, `p${i}`), 'same');
+    if (typeof answer === 'object' && answer !== null && (answer as Record<string, unknown>)['status'] === 'ok') anyOk = true;
+    if (okYes(answer)) suggestions.push({ id: pair.id, same_as: pair.same_as, decided_by: decidedBy(answer, response) });
+  });
+  if (suggestions.length > 0) result.same_as_suggestions = suggestions;
+  if (plan.unchecked > 0 && anyOk) result.same_as_unchecked = plan.unchecked;
+  return result;
 }
 
 function learningsPrune(olderThan: string, opts?: { storeDir?: string }): PruneResult {
@@ -366,7 +531,7 @@ function cmdLearningsQuery(tag: string, raw: boolean): void {
 
 function cmdLearningsCopy(cwd: string, raw: boolean): void {
   const planDir = path.join(cwd, '.planning');
-  const result = learningsCopyFromProject(planDir);
+  const result = copyWithSameAsSuggestions(planDir, { cwd });
   output(result, raw, undefined);
 }
 
@@ -394,6 +559,9 @@ export = {
   learningsQuery,
   learningsDelete,
   learningsCopyFromProject,
+  planSameAsDecisions,
+  copyWithSameAsSuggestions,
+  MAX_SAME_AS_PAIRS,
   learningsPrune,
   cmdLearningsList,
   cmdLearningsQuery,

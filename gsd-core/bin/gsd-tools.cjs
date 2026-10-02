@@ -930,7 +930,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   // Each body relocated verbatim from its `case` arm; inner break; → return;.
 
   function routeAgent({ args, cwd, raw, error }) {
-    routeAgentCommand({ args, raw });
+    routeAgentCommand({ args, cwd, raw });
   }
 
   function routeSmartEntry({ args, cwd, raw, error }) {
