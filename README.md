@@ -44,7 +44,7 @@ This is an unofficial fork. It is not affiliated with or endorsed by open-gsd. I
   - The roadmapper flags success criteria, and the doc verifier flags doc claims. Both flags are advisory.
   - The user profiler gets message pre-labels that set its reading order.
   - The debugger gets knowledge-base candidates that may share a root cause, when MemPalace is not available.
-- Not built: command routing for `/gsd:do`. It measured too weak on real traffic.
+- Not built: command routing for `/gsd-do`. It measured too weak on real traffic.
 
 ### How to use it
 
