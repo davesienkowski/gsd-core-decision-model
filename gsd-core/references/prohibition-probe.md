@@ -73,6 +73,10 @@ This collapses the raw ~10 to ~2–3 genuine prohibitions (GT 5/5, 0 false posit
 N18 eight-spec battery). A requirement that yields zero kept prohibitions emits an empty
 list — that is the correct precision outcome for a pure utility, not a failure.
 
+<!-- decision-model: prohibition-rescue -->
+**Decision model (optional):** when `gsd_run decide --status` prints `"active": true`, a second classifier re-checks the routine-engineering drops and RESCUES any it reads as values / safety / ethics into the surfaced list for author review (`~/.claude/gsd-core/references/decision-model-calls.md`, section `site: prohibition-rescue`). It never drops a kept item and never mints a canon item.
+<!-- /decision-model -->
+
 ## Canon-referral (do not mint canon items)
 
 Some kept candidates are not bespoke at all — they are **canon** security/compliance

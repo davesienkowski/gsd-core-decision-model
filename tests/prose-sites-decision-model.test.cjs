@@ -122,6 +122,70 @@ const SITES = [
     ],
     must: ['decided-by:'],
   },
+  {
+    file: 'gsd-core/workflows/inbox.md',
+    id: 'inbox-type',
+    count: 2,
+    maxBytes: 650,
+    keep: [
+      '- Cannot determine → mark as `needs-triage`',
+      '| Cannot determine | Unknown | Flag for manual review |',
+    ],
+    must: ['proposed'],
+  },
+  {
+    file: 'gsd-core/workflows/inbox.md',
+    id: 'inbox-fields',
+    maxBytes: 750,
+    keep: ['- Score = (present / total) * 100', 'Always confirm with the user before closing anything:'],
+    must: ['own judgment'],
+  },
+  {
+    file: 'gsd-core/workflows/graduation.md',
+    id: 'lesson-dedupe',
+    maxBytes: 950,
+    keep: [
+      'Two items are in the same cluster if similarity ≥ 0.25.',
+      '**Skip any cluster whose `cluster_id` matches a `dismissed` entry.**',
+    ],
+    must: ['Treat as one cluster?'],
+  },
+  {
+    file: 'gsd-core/references/prohibition-probe.md',
+    id: 'prohibition-rescue',
+    maxBytes: 600,
+    keep: ['- **DROP routine-engineering items**', 'This collapses the raw ~10 to ~2–3 genuine prohibitions'],
+    must: ['never drops'],
+  },
+  {
+    file: 'gsd-core/workflows/spec-phase.md',
+    id: 'prohibition-rescue',
+    maxBytes: 550,
+    keep: ['**D1 — no compiled engine (ADR-550 D7b).**', '4. **Resolve each surfaced (non-canon) prohibition**'],
+    must: ['canon'],
+  },
+  {
+    file: 'gsd-core/workflows/spec-phase.md',
+    id: 'probe-proposal',
+    maxBytes: 650,
+    questions: false,
+    keep: [
+      "   - An `unclassified` row (probe `unclassified — review manually`) means the requirement's",
+      '**`unclassified` exception (#1110):** `--auto` leaves an `unclassified` candidate',
+    ],
+    must: ['confirm_with.shapes', '#1110'],
+  },
+  {
+    file: 'gsd-core/workflows/ui-phase.md',
+    id: 'probe-proposal',
+    maxBytes: 650,
+    questions: false,
+    keep: [
+      'If the user ADDs a kind, re-run that element with an authored `elements` override',
+      '**Kind-confirmation under `--auto`.**',
+    ],
+    must: ['confirm_with.elements'],
+  },
 ];
 
 function read(rel) {
@@ -411,5 +475,40 @@ describe('decide CLI tracer (real engine, sandboxed)', () => {
     assert.equal(built.exitCode, 0, built.stderr);
     assert.deepEqual(JSON.parse(built.stdout).requests.map((r) => r.id), ['f1', 'f3']);
     assert.ok(built.stderr.includes('skip f2 corpus/missing.md'), built.stderr);
+  });
+
+  test('the documented records builder round-trips through decide --request -, skipping a record the plan omits', (t) => {
+    const { cwd, env } = sandbox(t);
+    const reference = readReference();
+    const program = builderProgram(reference, '<!-- dm:records-builder -->');
+    const questions = {
+      issue: questionBlocks(reference).find((q) => q.id === 'inbox-type.issue').questions,
+      pr: questionBlocks(reference).find((q) => q.id === 'inbox-type.pr').questions,
+    };
+    const files = {
+      'questions.json': questions,
+      'records.json': [
+        { number: 12, title: 'Crash on save', body: '### What happened?\nIt crashes.' },
+        { number: 15, title: 'Add dark mode', body: '' },
+        { number: 17, title: 'Not in the plan', body: 'omitted' },
+      ],
+      'plan.json': { 12: 'issue', 15: 'issue' },
+    };
+    for (const [name, value] of Object.entries(files)) fs.writeFileSync(path.join(cwd, name), JSON.stringify(value));
+
+    const built = runNode(['-e', program, 'questions.json', 'records.json', 'plan.json'], { cwd, env, timeoutMs: PROBE_TIMEOUT_MS });
+    assert.equal(built.exitCode, 0, built.stderr);
+    const request = JSON.parse(built.stdout);
+    assert.deepEqual(request.requests.map((r) => r.id), ['n12', 'n15']);
+    for (const r of request.requests) assert.ok(r.state.startsWith('Title: '), `state starts with the title: ${r.state.slice(0, 20)}`);
+    assert.ok(request.requests[0].state.includes('It crashes.'), 'the body follows the title, untruncated');
+
+    const answered = runNode([TOOLS_PATH, 'decide', '--request', '-'], { cwd, env, input: built.stdout, timeoutMs: PROBE_TIMEOUT_MS });
+    assert.equal(answered.exitCode, 0, answered.stderr);
+    const response = JSON.parse(answered.stdout.slice(answered.stdout.indexOf('{')));
+    assert.deepEqual(response.results.map((r) => r.id), request.requests.map((r) => r.id));
+    for (const r of response.results) {
+      for (const answer of Object.values(r.answers)) assert.ok(['ok', 'abstain'].includes(answer.status), `status ${answer.status}`);
+    }
   });
 });

@@ -72,6 +72,10 @@ If an issue has no type label, attempt to classify from the body content:
 - Contains "### What happened?" → likely Bug
 - Contains "### What is the maintenance task?" → likely Chore
 - Cannot determine → mark as `needs-triage`
+
+<!-- decision-model: inbox-type -->
+**Decision model (optional):** for issues these rules leave undetermined, run `gsd_run decide --status` once per run; only if it prints `"active": true`, ask for a proposed type per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: inbox-type`). Show an `ok` type in the report as "proposed" with its `decided-by:` line; the issue still counts as `needs-triage` for review, labels, and closing. Otherwise unchanged.
+<!-- /decision-model -->
 </step>
 
 <step name="review_issues">
@@ -131,6 +135,10 @@ For each classified issue, review against its template requirements.
 - [ ] Area affected selected
 - **Label check:** Has `needs-triage` label?
 
+<!-- decision-model: inbox-fields -->
+**Decision model (optional):** run `gsd_run decide --status` once per run; only if it prints `"active": true`, pre-check the required fields of the classified issues in ONE batch request per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: inbox-fields`). An `ok` "yes, filled" answer counts that field present; for any other answer, judge the field as below. A field counts as missing only on your own judgment, so no close ever rests on the model. Show the `decided-by:` line per item.
+<!-- /decision-model -->
+
 **Scoring:** For each issue, calculate a completeness percentage:
 - Count required fields present vs. total required fields
 - Score = (present / total) * 100
@@ -154,6 +162,10 @@ For each PR, classify by body content and linked issue:
 | Contains "## Fix PR" or "## What was broken" | Fix PR | fix.md |
 | Uses default template | Wrong Template | Flag — must use typed template |
 | Cannot determine | Unknown | Flag for manual review |
+
+<!-- decision-model: inbox-type -->
+**Decision model (optional):** for PRs this table leaves at "Cannot determine", run `gsd_run decide --status` once per run; only if it prints `"active": true`, ask for a proposed type per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: inbox-type`). Show an `ok` type in the report as "proposed" with its `decided-by:` line; the PR still counts as Unknown for review, labels, and closing. Otherwise unchanged.
+<!-- /decision-model -->
 
 Also check for linked issues:
 ```bash

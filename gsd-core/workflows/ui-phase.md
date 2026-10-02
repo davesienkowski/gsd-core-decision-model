@@ -441,6 +441,10 @@ was missed. If the user ADDs a kind, re-run that element with an authored `eleme
 SIGNAL, not proof the element is only that kind — the confirm step, not the heuristic, is what makes
 coverage sound.
 
+<!-- decision-model: probe-proposal -->
+**Decision model (optional):** when `gsd_run decide --status` prints `"active": true`, an `unclassified` row may carry `model_proposal` (see `~/.claude/gsd-core/references/decision-model-calls.md`, section `site: probe-proposal`). Show its proposed kinds, each with its `decided-by:` line, in this confirm step; confirming re-runs that element with `confirm_with.elements` as its `elements` override. Under `--auto` a proposal is only a hint: re-read the prose and author the override yourself.
+<!-- /decision-model -->
+
 **Resolution loop** (mirror spec-phase 5.5): resolve each applicable consideration via
 AskUserQuestion — **Specify** (→ `resolved`, verification: explicit; write a concrete truth) / **Dismiss (reason required)** /
 **Backstop** (→ `resolved`, verification: backstop; a held-out/visual UI-state test) / **Defer** (→ `unresolved`). An `unclassified` row is
