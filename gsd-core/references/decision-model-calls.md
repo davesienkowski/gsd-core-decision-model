@@ -218,12 +218,12 @@ Site `grep-rank`. When: after the grep step, before judging; zero hits means no 
 
 <!-- dm:questions grep-rank.stub -->
 ```json
-{"real": {"type": "noul", "instructions": "Is this match a real stub: a value or placeholder that reaches rendering or user-visible output with no other code path populating it with real data?"}}
+{"real": {"type": "noul", "instructions": "Is this match a real stub left in shipped code: placeholder text, a TODO marker, or an empty or hardcoded value that reaches rendering or user-visible output with no other code path populating it with real data? A string literal or a comment can be a stub. Answer no only when real data replaces the value, or the match is a test helper, a type default or a false match."}}
 ```
 
 <!-- dm:questions grep-rank.review -->
 ```json
-{"real": {"type": "noul", "instructions": "Is this pattern match a real issue in this code, not a string literal, comment, test fixture or an unrelated API such as a regex exec call?"}}
+{"real": {"type": "noul", "instructions": "Is this match a genuine instance of what its grep pattern looks for: a credential value written into the code, a TODO, FIXME, HACK, XXX, console.log or debugger left in shipped code, a call to a dangerous function, or a catch that swallows the error? A match inside a string literal or a comment counts. Answer no only for a false match, such as an unrelated identifier, a regex exec call or a fake value in a test fixture."}}
 ```
 
 <!-- dm:questions grep-rank.copy -->

@@ -883,6 +883,36 @@ describe('decide CLI tracer (real engine, sandboxed)', () => {
       'each state is the prefix plus that file\'s own slice, the past-the-end slice cut at the end of the file');
   });
 
+  test('WR-01: a hardcoded secret in a string literal is asked whether it is what the pattern looks for, never de-ranked as a literal', async (t) => {
+    const reference = readReference();
+    const blocks = questionBlocks(reference);
+    for (const id of ['grep-rank.review', 'grep-rank.stub']) {
+      const q = blocks.find((b) => b.id === id).questions.real.instructions;
+      assert.ok(!/\bnot a string literal\b|\bnot a (?:string literal|comment)\b/i.test(q), `${id} must not tell the model a literal or comment is not real: ${q}`);
+      assert.ok(/string literal or a comment (?:counts|can be a stub)/.test(q), `${id} must say a literal or comment can be the real thing: ${q}`);
+    }
+    const review = blocks.find((b) => b.id === 'grep-rank.review').questions;
+    assert.match(review.real.instructions, /credential value/, 'the review question names the secret case');
+    assert.match(review.real.instructions, /TODO, FIXME/, 'the review question names the leftover-marker case');
+
+    const stub = await startStub(t, ['yes']);
+    const box = enabledSandbox(t, stub);
+    const { cwd } = box;
+    const dir = await mkdir(t, box);
+    fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+    const secretLine = 'const password = "hunter2";';
+    fs.writeFileSync(path.join(cwd, 'src', 'config.ts'), `'use strict';\n\n${secretLine}\nmodule.exports = { password };\n`);
+    const item = fillGrepItem(grepRankTemplate(reference), { k: 1, n: 3, file: 'src/config.ts', kind: 'secret' });
+    fs.writeFileSync(path.join(dir, 'questions.json'), JSON.stringify(review));
+    fs.writeFileSync(path.join(dir, 'items.json'), JSON.stringify([item]));
+    const res = await runCli(['decide', '--questions', path.join(dir, 'questions.json'), '--items', path.join(dir, 'items.json'), '--budget-ms', '240000'], box);
+    assert.equal(res.exitCode, 0, res.stderr);
+    assert.equal(stub.requests.length, 1);
+    assert.equal(stub.requests[0].question, review.real.instructions, 'the secret hit is asked the review question');
+    assert.ok(stub.requests[0].state.includes(secretLine), 'the literal reaches the model as data');
+    assert.equal(jsonOut(res).results[0].answers.real.answer, 'yes');
+  });
+
   test('negative control: a questions file with integer criteria keys abstains invalid-request and makes no call', async (t) => {
     const stub = await startStub(t);
     const box = enabledSandbox(t, stub);
