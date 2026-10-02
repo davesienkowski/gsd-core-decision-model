@@ -1673,7 +1673,7 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 | Flag | Description |
 |------|-------------|
 | `--request <path>` | Read the request JSON from a file. The path must resolve inside the project root and the file must be a regular file of at most 4 MiB |
-| `--request -` | Read the request JSON from stdin |
+| `--request -` | Read the request JSON from stdin, at most 4 MiB (counted in bytes) |
 | `--status` | Print `{active, backend, model, endpoint_host, min_confidence, reachable, config_problems, ignored_project_keys}`. `reachable` is `null` and no network call is made. `config_problems` lists why the config is invalid (empty when valid), and an invalid `backend` or `min_confidence` is reported as `null`. `ignored_project_keys` lists user-scope-only keys (`decision_model.allow_remote`, `decision_model.api_key_env`) that a project or workstream `config.json` set and that were therefore ignored |
 | `--status --probe` | As `--status`, and also check that the backend answers (`reachable` becomes `true` or `false`). `--probe` is valid only with `--status`, and `--request` cannot be combined with `--status` |
 

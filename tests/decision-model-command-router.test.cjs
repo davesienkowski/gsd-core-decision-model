@@ -551,4 +551,22 @@ describe('gsd-tools decide (full contract)', () => {
       assert.equal(jsonErrorReason(res), 'usage', args.join(' '));
     }
   });
+
+  test('IN-11: the stdin size limit counts bytes, not UTF-16 units', () => {
+    const { routeDecideCommand } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'decision-model-command-router.cjs'));
+    // 1.5M three-byte characters: about 4.5 MB, over the 4 MiB limit, though only 1.5M UTF-16 units.
+    const text = JSON.stringify({ state: '\u3042'.repeat(1500000), questions: CHOICE_REQUEST.questions });
+    assert.ok(text.length < 4194304 && Buffer.byteLength(text) > 4194304);
+    let decided = 0;
+    const engine = { validateRequest: () => ({ ok: true }), decideSync: () => { decided += 1; return {}; }, statusSync: () => ({}) };
+    const calls = [];
+    const error = (message, reason) => { calls.push({ message, reason }); throw new Error('exit'); };
+    assert.throws(() => routeDecideCommand({
+      args: ['decide', '--request', '-'], cwd: process.cwd(), raw: false, error,
+      _engine: engine, _readStdin: () => text, _core: { output: () => {} },
+    }), /exit/);
+    assert.equal(decided, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].reason, 'usage');
+  });
 });

@@ -107,6 +107,12 @@ function routeDecideCommand({ args, cwd, raw, error, _engine, _readStdin, _core 
       usage(`decide could not read the request from stdin: ${e instanceof Error ? e.message : String(e)}`);
       return undefined;
     }
+    // The same byte limit as a request file (IN-11): safeJsonParse's maxLength counts
+    // UTF-16 units, which lets about three times as many bytes of CJK text through.
+    if (Buffer.byteLength(text, 'utf8') > MAX_REQUEST_BYTES) {
+      usage(`decide request on stdin must be at most ${MAX_REQUEST_BYTES} bytes`);
+      return undefined;
+    }
   } else {
     const contained = tryWithinRoot(requestArg, cwd, PathAcceptance.AbsoluteInsideRoot);
     if (contained === null) {
