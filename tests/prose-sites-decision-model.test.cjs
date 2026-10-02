@@ -590,6 +590,44 @@ describe('decision-model-calls.md reference', () => {
     }
   });
 
+  test('WR-02: every agent-site prefix is fixed vocabulary plus a line number, within the stated character rule', () => {
+    const text = readReference();
+    const agent = agentSitesPart(text);
+    assert.ok(agent.includes('ASCII letters, digits, space and `:-_()`'), 'the Items bullet states the prefix character rule');
+    assert.ok(agent.includes('never text copied from a file, a doc, a message or a hit'), 'the Items bullet forbids copied text');
+    const grep = subsection(text, 'Grep-hit pre-rank');
+    assert.ok(!grep.includes('<pattern>'), 'a grep prefix never carries the pattern text');
+    // Each grep-rank host names its own kinds; a prefix is built from one of them.
+    const kinds = {};
+    for (const agentName of ['gsd-verifier', 'gsd-executor', 'gsd-code-reviewer', 'gsd-ui-auditor']) {
+      const m = new RegExp(`${agentName}: ((?:\`[a-z-]+\`(?:, )?)+)`).exec(grep);
+      assert.ok(m, `### Grep-hit pre-rank lists the kinds for ${agentName}`);
+      kinds[agentName] = m[1].split(', ').map((k) => k.slice(1, -1));
+    }
+    for (const required of ['secret', 'todo', 'debug-artifact', 'generic-label', 'placeholder']) {
+      assert.ok(Object.values(kinds).some((list) => list.includes(required)), `some host has kind ${required}`);
+    }
+    const PREFIX_RULE = /^[A-Za-z0-9 :\-_()]{0,200}$/;
+    // Fill every documented item template with the worst-case values its section allows and check the prefix.
+    const longest = Object.values(kinds).flat().reduce((a, b) => (b.length > a.length ? b : a), '');
+    const prefixes = [
+      fillGrepItem(grepRankTemplate(text), { k: 60, n: 99999, file: 'src/a.ts', kind: longest }).prefix,
+    ];
+    const docTpl = /`(\{"id": "c<k>"[^`]*\})`/.exec(subsection(text, 'Doc-claim flag'));
+    assert.ok(docTpl, 'doc-claim item template');
+    prefixes.push(JSON.parse(docTpl[1].replace('<doc_path>', 'README.md').replace('[max(1, n-1), n+1]', '[1, 3]')
+      .split('<k>').join('1').split('<n>').join('99999').replace('<kinds>', 'file-path command endpoint function dependency')
+      .replace('<where>', 'fenced-block')).prefix);
+    for (const [heading, idp] of [['Criterion flag', 't<k>'], ['Profile pre-label', 'm<k>']]) {
+      const m = new RegExp(`\`(\\{"id": "${idp}"[^\`]*\\})\``).exec(subsection(text, heading));
+      assert.ok(m, `${heading} item template`);
+      prefixes.push(JSON.parse(m[1].split('<dir>').join('/tmp/d').replace('[k, k]', '[1, 1]').split('<k>').join('1')).prefix);
+    }
+    for (const p of prefixes) assert.ok(PREFIX_RULE.test(p), `prefix breaks the character rule: ${JSON.stringify(p)}`);
+    const kb = subsection(text, 'KB recall');
+    assert.ok(kb.includes('prefix character rule'), 'the KB summary follows the prefix character rule');
+  });
+
   test('has every shared heading and the literals the sites rely on', () => {
     const text = readReference();
     const lines = text.split('\n');
