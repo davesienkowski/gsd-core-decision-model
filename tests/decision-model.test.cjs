@@ -789,19 +789,33 @@ describe('jev backend (fake HTTP only)', () => {
   });
 
   test('CR-02: order_check reverses the criteria on the wire, not only in the parsed object', async () => {
+    // IN-05: the integer-keyed question makes this a CR-02 regression test. Before the
+    // fix it reached the wire, and its reversed criteria were sent in the same order
+    // (JavaScript puts integer keys first, ascending), so the check below failed.
     const h = fakeHttp(() => ({
-      ok: true, status: 200, body: { answers: { c: { choice: 'first', confidence: 0.9, probabilities: { first: 0.9 } } } },
+      ok: true,
+      status: 200,
+      body: { answers: { c: { choice: 'first', confidence: 0.9, probabilities: { first: 0.9 } }, i: { choice: '1', confidence: 0.9, probabilities: { 1: 0.9 } } } },
     }));
     const criteria = { first: 'one', second: 'two', third: 'three' };
-    await mod.decide(
-      req({ c: { type: 'choice', instructions: 'Pick.', criteria, order_check: true } }),
+    const r = await mod.decide(
+      req({
+        c: { type: 'choice', instructions: 'Pick.', criteria, order_check: true },
+        i: { type: 'choice', instructions: 'Pick.', criteria: { 1: 'one', 2: 'two', 3: 'three' }, order_check: true },
+      }),
       { config: jevCfg(), http: h.http, env: ENV },
     );
     assert.equal(h.calls.length, 2);
-    const at = (raw, k) => raw.indexOf(`"${k}":`);
     const [fwd, rev] = h.calls.map((c) => c.raw);
-    assert.ok(at(fwd, 'first') < at(fwd, 'second') && at(fwd, 'second') < at(fwd, 'third'), fwd);
-    assert.ok(at(rev, 'third') < at(rev, 'second') && at(rev, 'second') < at(rev, 'first'), rev);
+    const wireOrderOf = (raw, keys) => [...keys].sort((a, b) => raw.indexOf(`"${a}":`) - raw.indexOf(`"${b}":`));
+    // Every question the reversed call carries lists its options in exactly the reverse wire order.
+    for (const k of Object.keys(JSON.parse(rev).questions)) {
+      const keys = Object.keys(JSON.parse(fwd).questions[k].criteria);
+      assert.deepEqual(wireOrderOf(rev, keys), wireOrderOf(fwd, keys).reverse(), `${k}: ${rev}`);
+    }
+    assert.deepEqual(wireOrderOf(fwd, ['first', 'second', 'third']), ['first', 'second', 'third'], fwd);
+    assert.deepEqual(Object.keys(JSON.parse(rev).questions), ['c'], 'the integer-keyed question never reaches the wire');
+    assert.equal(r.results[0].answers.i.reason, 'invalid-request');
     assert.notEqual(fwd, rev, 'the reversed request differs from the first');
   });
 
