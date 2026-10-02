@@ -623,6 +623,26 @@ function _readConfigFile(filePath: string):
 }
 
 /**
+ * The user-scope GSD defaults file, `$GSD_HOME/.gsd/defaults.json` (GSD_HOME
+ * falls back to the OS home directory). This is the one resolver for that path:
+ * Branch D, the #3532 shadow diagnostic and the decision-model user-scope-only
+ * keys (quick 261001-wza, D21) all read through it.
+ */
+function globalDefaultsPath(): string {
+  const home = process.env['GSD_HOME'] || os.homedir();
+  return path.join(home, '.gsd', 'defaults.json');
+}
+
+/**
+ * Read the user-scope defaults file without throwing: `ok` with the parsed
+ * object, `absent`, or `fault` (unreadable or not a JSON object). Read-only:
+ * it never writes, migrates or warns.
+ */
+function readGlobalDefaults(): ReturnType<typeof _readConfigFile> {
+  return _readConfigFile(globalDefaultsPath());
+}
+
+/**
  * Dedup set for the unusable-config diagnostic. Keyed on resolved path + errno
  * per the ADR-1411 amendment — never on message text, which would couple the
  * guard to wording, and never on the errno alone, which would suppress a
@@ -1010,8 +1030,7 @@ function loadConfigResolvedInternal(cwd: string, options: Record<string, unknown
     // untouched. Faults in the global file stay silent in this branch (the
     // project config governs; the nearer file is the actionable one).
     try {
-      const shadowHome = process.env['GSD_HOME'] || os.homedir();
-      const shadowPath = path.join(shadowHome, '.gsd', 'defaults.json');
+      const shadowPath = globalDefaultsPath();
       const shadowRead = _readConfigFile(shadowPath);
       if (shadowRead.kind === 'ok') {
         _warnShadowedGlobalDefaults(shadowRead.data, shadowPath);
@@ -1073,9 +1092,7 @@ function loadConfigResolvedInternal(cwd: string, options: Record<string, unknown
     }
     // Branch D or E: no .planning/
     try {
-      const home = process.env['GSD_HOME'] || os.homedir();
-      const globalDefaultsPath = path.join(home, '.gsd', 'defaults.json');
-      const globalRead = _readConfigFile(globalDefaultsPath);
+      const globalRead = readGlobalDefaults();
       if (globalRead.kind === 'fault') {
         // ~/.gsd/defaults.json is present but unusable. Only report it when the
         // project config did not already fail — the nearer file is the one the
@@ -1202,6 +1219,8 @@ function loadConfig(cwd: string, options: Record<string, unknown> = {}): Record<
 export = {
   loadConfig,
   loadConfigResolved,
+  globalDefaultsPath,
+  readGlobalDefaults,
   CONFIG_REASON,
   _warnedUnusableConfig,
   isGitIgnored,

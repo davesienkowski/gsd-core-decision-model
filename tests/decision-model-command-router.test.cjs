@@ -88,9 +88,15 @@ function makeProject(t, decisionModel) {
 }
 
 /** Async execFile of `gsd-tools decide ...`; resolves {code, stdout, stderr}. */
-function runDecide(t, args, { cwd, input, env } = {}) {
+function runDecide(t, args, { cwd, input, env, userDefaults } = {}) {
   const home = createTempDir('gsd-decide-home-');
   t.after(() => cleanup(home));
+  if (userDefaults !== undefined) {
+    // The user-scope defaults file ($GSD_HOME/.gsd/defaults.json), the only source of
+    // decision_model.allow_remote and decision_model.api_key_env (D21).
+    fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify(userDefaults));
+  }
   const childEnv = { ...process.env, GSD_HOME: home, ...(env || {}) };
   delete childEnv.GSD_WORKSTREAM;
   delete childEnv.GSD_PROJECT;
@@ -259,6 +265,7 @@ describe('gsd-tools decide (full contract)', () => {
         endpoint_host: stub.host,
         min_confidence: 0.9,
         reachable: null,
+        ignored_project_keys: [],
       });
     }
     assert.equal(stub.requests.length, 0, 'a disabled capability never touches the network');
@@ -432,15 +439,50 @@ describe('gsd-tools decide (full contract)', () => {
 
   test('a jev backend with no key abstains invalid-config and sends nothing', async (t) => {
     const stub = await startStub(t, () => ({ status: 200, body: { answers: {} } }));
-    const project = makeProject(t, {
-      enabled: true, model: 'jev-model', backend: 'jev', base_url: stub.url, api_key_env: 'GSD_TEST_JEV_KEY_UNSET',
-    });
+    const project = makeProject(t, { enabled: true, model: 'jev-model', backend: 'jev', base_url: stub.url });
     const file = writeRequest(project, CHOICE_REQUEST);
-    const res = await runDecide(t, ['--request', file], { cwd: project, env: { GSD_TEST_JEV_KEY_UNSET: '' } });
+    const res = await runDecide(t, ['--request', file], {
+      cwd: project,
+      env: { GSD_TEST_JEV_API_KEY: '' },
+      userDefaults: { decision_model: { api_key_env: 'GSD_TEST_JEV_API_KEY' } },
+    });
     assert.equal(res.code, 0, `stderr: ${res.stderr}`);
     const out = JSON.parse(res.stdout);
     assert.equal(out.backend, 'jev');
     assert.deepEqual(out.results[0].answers.kind, { status: 'abstain', reason: 'invalid-config' });
     assert.equal(stub.requests.length, 0);
+  });
+
+  test('D21: a project api_key_env and allow_remote are ignored end to end and reported by --status', async (t) => {
+    const stub = await startStub(t, () => ({ status: 200, body: { answers: { kind: { choice: 'prd', confidence: 0.95, probabilities: { prd: 0.95 } } } } }));
+    const project = makeProject(t, {
+      enabled: true, model: 'jev-model', backend: 'jev', base_url: stub.url,
+      allow_remote: true, api_key_env: 'GITHUB_TOKEN',
+    });
+    const file = writeRequest(project, CHOICE_REQUEST);
+    const env = { GITHUB_TOKEN: 'ghp_must_not_leak', OPENROUTER_API_KEY: 'or-user-key' };
+    const res = await runDecide(t, ['--request', file], { cwd: project, env });
+    assert.equal(res.code, 0, `stderr: ${res.stderr}`);
+    assert.equal(JSON.parse(res.stdout).results[0].answers.kind.status, 'ok');
+    assert.equal(stub.requests.length, 1);
+    assert.equal(stub.requests[0].headers.authorization, 'Bearer or-user-key');
+    assert.ok(!JSON.stringify(stub.requests).includes('ghp_must_not_leak'));
+
+    const status = await runDecide(t, ['--status'], { cwd: project, env });
+    assert.equal(status.code, 0, `stderr: ${status.stderr}`);
+    assert.deepEqual(JSON.parse(status.stdout).ignored_project_keys, ['decision_model.allow_remote', 'decision_model.api_key_env']);
+  });
+
+  test('D21: allow_remote from the user defaults file is the consent a remote base_url needs', async (t) => {
+    // 192.0.2.1 is TEST-NET-1: with consent the call is attempted and fails (timeout or
+    // unreachable); without consent it never leaves (egress-not-consented).
+    const project = makeProject(t, { enabled: true, model: 'stub-model', base_url: 'http://192.0.2.1:9', timeout_ms: 300 });
+    const file = writeRequest(project, CHOICE_REQUEST);
+    const consented = await runDecide(t, ['--request', file], { cwd: project, userDefaults: { decision_model: { allow_remote: true } } });
+    assert.equal(consented.code, 0, `stderr: ${consented.stderr}`);
+    const reason = JSON.parse(consented.stdout).results[0].answers.kind.reason;
+    assert.ok(['timeout', 'unreachable'].includes(reason), `consented call was attempted: ${reason}`);
+    const noConsent = await runDecide(t, ['--request', file], { cwd: project });
+    assert.deepEqual(JSON.parse(noConsent.stdout).results[0].answers.kind, { status: 'abstain', reason: 'egress-not-consented' });
   });
 });

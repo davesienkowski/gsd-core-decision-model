@@ -55,7 +55,13 @@ const SPAWN_MARGIN_MS = 5000;
 const TOP_LOGPROBS = 20;
 
 const KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/;
-const API_KEY_ENV_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+/** D21: only a plainly named API-key variable may be read, so GITHUB_TOKEN or AWS_SECRET_ACCESS_KEY can never be named. */
+const API_KEY_ENV_RE = /^[A-Z][A-Z0-9_]*_API_KEY$/;
+/**
+ * D21: keys honored only from the user's own GSD defaults ($GSD_HOME/.gsd/defaults.json),
+ * never from a project or workstream config.json, which a cloned repository controls.
+ */
+const USER_SCOPE_KEYS: ReadonlySet<string> = new Set(['allow_remote', 'api_key_env']);
 const RESERVED_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
 
 const ABSTAIN_REASON = Object.freeze({
@@ -115,6 +121,8 @@ interface ConfigValidation {
   valid: boolean;
   config: DecisionConfig;
   problems: string[];
+  /** D21: user-scope-only keys that a project or workstream config set; they were ignored. */
+  ignored_project_keys: string[];
 }
 
 type QuestionProblem = AbstainReason | null;
@@ -427,23 +435,35 @@ function validateDecisionConfig(raw: unknown): ConfigValidation {
 
   const apiKeyEnv = pick('api_key_env');
   if (typeof apiKeyEnv !== 'string' || !API_KEY_ENV_RE.test(apiKeyEnv)) {
-    problems.push('api_key_env must be an environment variable name');
+    problems.push('api_key_env must be an upper-case environment variable name ending in _API_KEY');
   }
   config['api_key_env'] = apiKeyEnv;
 
   const logPath = pick('log_path');
   if (typeof logPath !== 'string') { problems.push('log_path must be a string'); config['log_path'] = ''; } else config['log_path'] = logPath;
 
-  return { valid: problems.length === 0, config: config as unknown as DecisionConfig, problems };
+  return { valid: problems.length === 0, config: config as unknown as DecisionConfig, problems, ignored_project_keys: [] };
 }
 
-/** Read the nine keys through the capability config resolver, then validate them. */
+/**
+ * Read the nine keys through the capability config resolver, then validate them.
+ *
+ * D21: allow_remote and api_key_env come ONLY from the user's own defaults file
+ * (config-loader's GSD_HOME-aware reader). A project or workstream value for
+ * either is ignored and listed in `ignored_project_keys`, because a cloned
+ * repository controls those files and must not consent to egress or choose
+ * which secret is sent. Every other key resolves as before.
+ */
 function resolveDecisionConfig(cwd: string): ConfigValidation {
   /* eslint-disable @typescript-eslint/no-require-imports */
   const registry = require('./capability-registry.cjs') as Json;
-  const { loadConfig } = require('./config-loader.cjs') as { loadConfig: (cwd: string) => Json };
-  const { resolveConfigKey } = require('./capability-activation.cjs') as {
+  const { loadConfig, readGlobalDefaults } = require('./config-loader.cjs') as {
+    loadConfig: (cwd: string) => Json;
+    readGlobalDefaults: () => { kind: 'ok'; data: Json } | { kind: 'absent' } | { kind: 'fault' };
+  };
+  const { resolveConfigKey, _getNestedConfigValue } = require('./capability-activation.cjs') as {
     resolveConfigKey: (k: string, o: { config: Json; cwd: string; registry: Json; quiet?: boolean }) => { found: boolean; value: unknown };
+    _getNestedConfigValue: (c: Json, k: string) => { found: boolean; value: unknown };
   };
   const { tryWithinRoot, PathAcceptance } = require('./security.cjs') as {
     tryWithinRoot: (c: unknown, r: unknown, p: unknown) => unknown;
@@ -452,12 +472,28 @@ function resolveDecisionConfig(cwd: string): ConfigValidation {
   /* eslint-enable @typescript-eslint/no-require-imports */
 
   const config = loadConfig(cwd);
+  const userRead = readGlobalDefaults();
+  const userDefaults: Json = userRead.kind === 'ok' ? userRead.data : {};
+
   const raw: Json = {};
+  const ignored: string[] = [];
   for (const k of Object.keys(CONFIG_DEFAULTS)) {
-    const r = resolveConfigKey(`decision_model.${k}`, { config, cwd, registry, quiet: true });
+    const dotKey = `decision_model.${k}`;
+    if (USER_SCOPE_KEYS.has(k)) {
+      // Presence is judged on the raw workstream and root config.json files only:
+      // the loaded config carries schema defaults for every capability key, and
+      // an empty registry skips the schema-default level, so `found` means a
+      // project file set the key.
+      if (resolveConfigKey(dotKey, { config: {}, cwd, registry: {}, quiet: true }).found) ignored.push(dotKey);
+      const fromUser = _getNestedConfigValue(userDefaults, dotKey);
+      raw[k] = fromUser.found ? fromUser.value : undefined;
+      continue;
+    }
+    const r = resolveConfigKey(dotKey, { config, cwd, registry, quiet: true });
     raw[k] = r.found ? r.value : undefined;
   }
   const result = validateDecisionConfig(raw);
+  result.ignored_project_keys = ignored;
   if (result.config.log_path !== '' && tryWithinRoot(result.config.log_path, cwd, PathAcceptance.AbsoluteInsideRoot) === null) {
     result.problems.push('log_path must resolve inside the project root');
     result.valid = false;
@@ -1157,6 +1193,8 @@ interface StatusResult {
   endpoint_host: string | null;
   min_confidence: number;
   reachable: boolean | null;
+  /** D21: project-scope values for user-scope-only keys that were ignored. */
+  ignored_project_keys: string[];
 }
 
 /**
@@ -1198,6 +1236,7 @@ function statusSync(opts: StatusOpts): StatusResult {
     endpoint_host: endpointHost(c.base_url),
     min_confidence: c.min_confidence,
     reachable,
+    ignored_project_keys: resolved.ignored_project_keys,
   };
 }
 

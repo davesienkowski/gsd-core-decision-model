@@ -36,7 +36,7 @@
     "decision_model.base_url": {
       "type": "string",
       "default": "http://127.0.0.1:1234",
-      "description": "Base URL of the backend server. A non-loopback host is refused unless decision_model.allow_remote is true. A scheme-less value such as 127.0.0.1:1234 is invalid."
+      "description": "Base URL of the backend server. It may be set in any scope, but a non-loopback host is refused unless decision_model.allow_remote is true in the user defaults file. A scheme-less value such as 127.0.0.1:1234 is invalid."
     },
     "decision_model.model": {
       "type": "string",
@@ -46,7 +46,7 @@
     "decision_model.allow_remote": {
       "type": "boolean",
       "default": false,
-      "description": "Consent to send request state to a non-loopback host. When false, a non-loopback decision_model.base_url abstains egress-not-consented with no network call."
+      "description": "User scope only: read from $GSD_HOME/.gsd/defaults.json, never from a project or workstream config.json (a project value is ignored and listed by decide --status in ignored_project_keys). Consent to send request state to a non-loopback host. When false, a non-loopback decision_model.base_url abstains egress-not-consented with no network call."
     },
     "decision_model.min_confidence": {
       "type": "number",
@@ -61,7 +61,7 @@
     "decision_model.api_key_env": {
       "type": "string",
       "default": "OPENROUTER_API_KEY",
-      "description": "The NAME of the environment variable that holds the backend API key (used by the jev backend). It is never the key itself; the key is never written to config, argv, output or the log."
+      "description": "User scope only: read from $GSD_HOME/.gsd/defaults.json, never from a project or workstream config.json (a project value is ignored and listed by decide --status in ignored_project_keys). The NAME of the environment variable that holds the backend API key (used by the jev backend); it must match ^[A-Z][A-Z0-9_]*_API_KEY$. It is never the key itself; the key is never written to config, argv, output or the log."
     },
     "decision_model.log_path": {
       "type": "string",

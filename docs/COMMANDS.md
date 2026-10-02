@@ -1674,7 +1674,7 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 |------|-------------|
 | `--request <path>` | Read the request JSON from a file. The path must resolve inside the project root and the file must be a regular file of at most 4 MiB |
 | `--request -` | Read the request JSON from stdin |
-| `--status` | Print `{active, backend, model, endpoint_host, min_confidence, reachable}`. `reachable` is `null` and no network call is made |
+| `--status` | Print `{active, backend, model, endpoint_host, min_confidence, reachable, ignored_project_keys}`. `reachable` is `null` and no network call is made. `ignored_project_keys` lists user-scope-only keys (`decision_model.allow_remote`, `decision_model.api_key_env`) that a project or workstream `config.json` set and that were therefore ignored |
 | `--status --probe` | As `--status`, and also check that the backend answers (`reachable` becomes `true` or `false`). `--probe` is valid only with `--status`, and `--request` cannot be combined with `--status` |
 
 **Request.** Single form `{"state": "<text>", "questions": {"<key>": Q}}`, or batch form `{"requests": [{"id": "<id>", "state": "<text>", "questions": {...}}, ...]}`. A batch id is unique and is not `default`. `state` is required and is a string (an empty string is accepted), a plain object or an array; it is JSON-encoded into the user message as data and is never truncated. A question `Q` is one of:
@@ -1700,7 +1700,7 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 | `invalid-request` | A question is malformed: bad type, missing instructions, fewer than 2 criteria, a bad key, an invalid `min_confidence` or `order_check` |
 | `too-many-options` | More than 24 criteria |
 | `invalid-config` | A `decision_model.*` value is invalid, or the `jev` key is missing or rejected (HTTP 401 or 403) |
-| `egress-not-consented` | `base_url` is not loopback and `decision_model.allow_remote` is not `true` |
+| `egress-not-consented` | `base_url` is not loopback and `decision_model.allow_remote` is not `true` in the user defaults file |
 | `model-missing` | `decision_model.model` is empty, or the backend does not know the model |
 | `unreachable` | The backend could not be reached or returned an error |
 | `timeout` | A backend call exceeded `decision_model.timeout_ms` |
