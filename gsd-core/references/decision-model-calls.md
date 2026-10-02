@@ -261,7 +261,7 @@ Site `doc-claim-flag`. Host: gsd-doc-verifier and its twin, after Step 3 has ext
 {"real_claim": {"type": "noul", "instructions": "Does this line hold a real claim about this repository (a path, command, endpoint, function or dependency the doc says exists here), rather than only an example, vendor quote, placeholder, template or version string?"}}
 ```
 
-Use: an `ok` `no` only prompts a re-check of that line's candidates against `<skip_rules>`; a candidate is skipped only when a rule applies, and the verifier names the rule. Every remaining candidate gets today's filesystem check, which alone sets PASS or FAIL; the model never skips a claim or sets a verdict (D7). A flagged candidate that FAILs gains an optional `"advisory": "possible example or placeholder; decided-by: decision-model (conf X, backend Y)"` field. The counts, the order of `failures` (line order) and every other field are unchanged. Write no file outside `<dir>` for this call.
+Use: a flag changes nothing in Step 4. Every extracted candidate gets today's filesystem check, which alone sets PASS or FAIL; the model never skips a claim, never changes `claims_checked` and never sets a verdict (D7). A candidate on a line answered `ok` `no` that FAILs gains an optional `"advisory": "possible example or placeholder; decided-by: decision-model (conf X, backend Y)"` field. The counts, the order of `failures` (line order) and every other field are unchanged. Write no file outside `<dir>` for this call.
 
 ### Profile pre-label
 

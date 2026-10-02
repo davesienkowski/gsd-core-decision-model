@@ -87,7 +87,7 @@ Follow in order:
 **Step 3: Extract claims by line.** Process the doc line by line, tracking line number and context (fenced code block vs. prose). Apply skip rules before extracting. Extract all claims per applicable category into `{ line, category, claim }` tuples.
 
 <!-- decision-model: doc-claim-flag -->
-**Decision model (optional):** if `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`) prints `"active": true`, flag candidates per `~/.claude/gsd-core/references/decision-model-calls.md` (Doc-claim flag); a flag only prompts a `<skip_rules>` re-check or adds `advisory` to a FAIL, never skips a claim or sets PASS/FAIL.
+**Decision model (optional):** if `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`) prints `"active": true`, flag candidates per `~/.claude/gsd-core/references/decision-model-calls.md` (Doc-claim flag); a flag only adds `advisory` to a FAIL; it never skips a claim, changes `claims_checked` or sets PASS/FAIL.
 <!-- /decision-model -->
 
 **Step 4: Verify each claim.** Apply the method from `<claim_extraction>` for its category: file path → Glob/Read; command → package.json scripts or file existence; API endpoint → Grep across source directories; function → Grep across source files; dependency → package.json dependencies fields. Record PASS or `{ line, claim, expected, actual }` for FAIL.

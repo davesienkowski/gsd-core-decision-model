@@ -293,7 +293,7 @@ const SITES = [
     refSection: 'Doc-claim flag',
     maxBytes: 560,
     keep: ['Build a list of `{ line, category, claim }` tuples.', '- `claims_checked`: total claims attempted (excludes skipped claims)'],
-    must: ['never skips a claim', 'PASS/FAIL', 'advisory', 'Doc-claim flag'],
+    must: ['never skips a claim', 'PASS/FAIL', 'advisory', 'Doc-claim flag', '`claims_checked`'],
   },
   {
     file: 'agents/gsd-doc-verifier.compact.md',
@@ -302,7 +302,7 @@ const SITES = [
     refSection: 'Doc-claim flag',
     maxBytes: 440,
     keep: ['Extract all claims per applicable category into `{ line, category, claim }` tuples.'],
-    must: ['never skips a claim', 'PASS/FAIL', 'advisory', 'Doc-claim flag'],
+    must: ['never skips a claim', 'PASS/FAIL', 'advisory', 'Doc-claim flag', '`claims_checked`'],
   },
   {
     file: 'agents/gsd-debugger.md',
@@ -588,6 +588,19 @@ describe('decision-model-calls.md reference', () => {
       assert.ok(tools, `${site.file} has a tools line`);
       const granted = tools[1].split(',').map((x) => x.trim());
       assert.ok(granted.includes('Write') && granted.includes('Bash'), `${site.file} hosts a block but lacks Write or Bash (D26)`);
+    }
+  });
+
+  test('WR-05: a doc-claim flag never leads to a skip; it only adds advisory to a FAIL entry', () => {
+    const body = subsection(readReference(), 'Doc-claim flag');
+    assert.ok(!/re-check/i.test(body), 'the reference has no re-check-to-skip path');
+    assert.ok(body.includes('changes nothing in Step 4'), 'the reference says a flag changes nothing in Step 4');
+    assert.ok(body.includes('never changes `claims_checked`'), 'the reference says the counts never change');
+    for (const rel of ['agents/gsd-doc-verifier.md', 'agents/gsd-doc-verifier.compact.md']) {
+      const [b] = extractBlocks(read(rel), 'doc-claim-flag');
+      assert.ok(b, rel);
+      assert.ok(!/re-check/i.test(b.text), `${rel}: the block has no re-check-to-skip path`);
+      assert.ok(b.text.includes('only adds `advisory` to a FAIL'), `${rel}: a flag only adds advisory to a FAIL`);
     }
   });
 

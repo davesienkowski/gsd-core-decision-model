@@ -126,7 +126,7 @@ Process the doc line by line. Track the current line number. For each line:
 Build a list of `{ line, category, claim }` tuples.
 
 <!-- decision-model: doc-claim-flag -->
-**Decision model (optional):** run `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`); only if it prints `"active": true`, flag the extracted candidates per `~/.claude/gsd-core/references/decision-model-calls.md` (Agent sites, Doc-claim flag). A flag never skips a claim or sets PASS/FAIL: it only prompts a re-check against `<skip_rules>` and may add `advisory` to a FAIL entry. Abstain, error or inactive: go on as above.
+**Decision model (optional):** run `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`); only if it prints `"active": true`, flag the extracted candidates per `~/.claude/gsd-core/references/decision-model-calls.md` (Agent sites, Doc-claim flag). A flag never skips a claim, never changes `claims_checked` and never sets PASS/FAIL: it only adds `advisory` to a FAIL entry. Abstain, error or inactive: go on as above.
 <!-- /decision-model -->
 
 **Step 4: Verify each claim**
