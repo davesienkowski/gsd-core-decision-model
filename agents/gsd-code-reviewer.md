@@ -211,6 +211,10 @@ grep -n -E "catch\s*\([^)]*\)\s*\{\s*\}" file
 
 Record findings with severity: secrets/dangerous=Critical, debug=Info, empty catch=Warning
 
+<!-- decision-model: grep-rank -->
+**Decision model (optional):** run `gsd_run decide --status`; only if it prints `"active": true`, pre-rank the hits per `~/.claude/gsd-core/references/decision-model-calls.md` (Agent sites, Grep-hit pre-rank) before recording findings. You still read and judge every hit. Abstain, error or inactive: scan in grep order.
+<!-- /decision-model -->
+
 **For depth=standard:**
 For each file:
 1. Read full content

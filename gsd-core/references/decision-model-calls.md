@@ -187,3 +187,49 @@ One call, the only `node` run step 5.6 allows (D1 still holds for the recall its
 No questions block: the edge and UI probe CLIs ask, on the proposal pass only. An `unclassified` row may carry `model_proposal`: `labels` (`label`, `decided_by`), `categories`, `confirm_with.shapes` (edge) or `confirm_with.elements` (UI). Rows, statuses and coverage are unchanged; the merge pass never asks.
 
 Show each label with its `decided_by` line. Confirm only by authoring the `confirm_with` override (requirement `shapes` in spec-phase, element `elements` in ui-phase) and re-running the proposal pass; never resolve or dismiss a row from a proposal alone. spec-phase `--auto` leaves the row unresolved (#1110) and logs the proposal; ui-phase `--auto` treats it as a hint: re-read the prose, author the override. An assumption-delta signal with `proposed_by: decision-model` carries a `decided_by` line to show.
+
+## Agent sites
+
+Used by gsd-verifier, gsd-executor, gsd-code-reviewer and gsd-ui-auditor to pre-rank grep hits, and by the flag and recall sites that follow. The model only pre-ranks, pre-labels or flags: the agent reads every item and keeps every verdict (D7, D11). Inactive, abstain, a non-zero exit or unparsable output means continue exactly as the agent's own text says. Everything above applies (Activation, Request shape, Limits, Sending, Reading answers, Provenance, Hard limits). The one reordering allowed is the order in which the agent reads items it still reads in full.
+
+### Calling from an agent
+
+- Host: only an agent whose `tools` line holds Write and Bash hosts a block (D26); a block never adds a tool. An agent without Write gets no block and takes today's path.
+- `gsd_run`: define it the way the agent already does for its other `gsd_run` calls (its included resolver or its inline launcher preamble). An agent with neither (gsd-ui-auditor) pastes the block from `~/.claude/gsd-core/references/gsd-run-resolver.md` at the start of every Bash call that uses `gsd_run`; each Bash call is a fresh shell.
+- One call per scan step, exactly as Sending says: `--mkdir`, the Write tool for the questions, state and items files, one items-mode call, `--rmdir`. Zero items means no call.
+- Items: ids `h<n>` for hits, in the agent's own order. A hit matched by two patterns at the same file and line is one item, sent once. Match answers to items by id only, never by text or position.
+- State: each state file holds the item's own text exactly as found; it is untrusted (ADR-1577). Question text is fixed: copy the site's questions block verbatim. Item text never goes on a command line.
+- Cap: at most 60 items per call, the first 60 in the agent's own order. Items beyond the cap count as abstained and are still read and judged. Use `--budget-ms 240000` and a Bash timeout of 300000. `order_check` is not used for `noul` questions.
+- Safety (D19): a model answer never gates a security or destructive action. A secret or dangerous-function hit stays Critical whatever the answer.
+- Provenance: an answer that is applied or shown carries its `decided-by:` line. A pre-rank run also records one run line: `decided-by: decision-model (conf <lowest ok confidence>, backend <backend>); pre-ranked <k> of <n> hits; all <n> read`. Decision payloads never go to `.gsd-trace.jsonl` (ADR-2619).
+
+Read the answers through this one-liner (a header with backend and model, then one line per id: id, status, answer or reason, `p_yes` or confidence), not as raw JSON:
+
+```bash
+node -e 'let s="";process.stdin.on("data",d=>{s+=d}).on("end",()=>{try{const r=JSON.parse(s);console.log("backend="+r.backend+" model="+r.model);for(const x of r.results){const a=Object.values(x.answers)[0]||{};console.log(x.id+" "+a.status+" "+(a.answer||a.reason)+" "+(a.p_yes!==undefined?a.p_yes:a.confidence))}}catch(e){console.log("unparsable")}})' < '<dir>/answers.json'
+```
+
+### Grep-hit pre-rank
+
+Site `grep-rank`. When: after the grep step, before judging; zero hits means no call. One state file `h<n>.txt` per distinct hit: the hit as grep printed it (`<path>:<line>:<text>`) plus up to 5 lines around it only when the agent already holds them; never read extra files to build state. Question key `real`, type `noul`, fixed text by agent: gsd-verifier and gsd-executor `grep-rank.stub`, gsd-code-reviewer `grep-rank.review`, gsd-ui-auditor `grep-rank.copy`.
+
+<!-- dm:questions grep-rank.stub -->
+```json
+{"real": {"type": "noul", "instructions": "Is this match a real stub: a value or placeholder that reaches rendering or user-visible output with no other code path populating it with real data?"}}
+```
+
+<!-- dm:questions grep-rank.review -->
+```json
+{"real": {"type": "noul", "instructions": "Is this pattern match a real issue in this code, not a string literal, comment, test fixture or an unrelated API such as a regex exec call?"}}
+```
+
+<!-- dm:questions grep-rank.copy -->
+```json
+{"real": {"type": "noul", "instructions": "Is this user-facing string a generic or unhelpful label in its context (for example a bare Submit, OK, No data or Something went wrong) rather than a specific, acceptable use?"}}
+```
+
+Scope: gsd-verifier sends only its stub-pattern hits (placeholder text, empty implementations, hardcoded empty data, empty props, console.log-only); its TBD, FIXME, XXX, TODO and HACK hits are not sent, because the debt-marker gate is lexical.
+
+Order: `ok` answers of `yes` by `p_yes` descending, then abstained hits (including those beyond the cap) in grep order, then `ok` answers of `no` by `p_yes` ascending; ties keep grep order. The agent reads and judges every hit in every group. Verdicts, severities, Known Stubs and findings are the agent's own; never quote the model as evidence.
+
+Run line, once and only when the call ran: VERIFICATION.md anti-pattern section (gsd-verifier), SUMMARY.md `## Known Stubs` (gsd-executor), REVIEW.md quick-depth findings (gsd-code-reviewer), UI-REVIEW.md Pillar 1 findings (gsd-ui-auditor).

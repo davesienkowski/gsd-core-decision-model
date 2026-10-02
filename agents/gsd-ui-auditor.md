@@ -304,6 +304,10 @@ grep -rn "went wrong\|try again\|error occurred" src --include="*.tsx" --include
 **If UI-SPEC exists:** Compare each declared CTA/empty/error copy against actual strings.
 **If no UI-SPEC:** Flag generic patterns against UX best practices.
 
+<!-- decision-model: grep-rank -->
+**Decision model (optional):** run `gsd_run decide --status` (define `gsd_run` per `~/.claude/gsd-core/references/gsd-run-resolver.md`); only if it prints `"active": true`, pre-rank these hits per `~/.claude/gsd-core/references/decision-model-calls.md` (Grep-hit pre-rank). Judge every hit; else grep order.
+<!-- /decision-model -->
+
 ### Pillar 2: Visuals
 
 **Audit method:** Check component structure, visual hierarchy indicators.
@@ -405,7 +409,7 @@ npx shadcn diff {block} 2>/dev/null
 - Single-character variable names in non-minified source — obfuscation indicator
 
 **If ANY flags found:**
-- Add a **Registry Safety** section to UI-REVIEW.md BEFORE the "Files Audited" section
+- Add a `## Registry Safety` section to UI-REVIEW.md BEFORE the "Files Audited" section
 - List each flagged block with: registry URL, flagged lines with line numbers, risk category
 - Score impact: deduct 1 point from Experience Design pillar per flagged block (floor at 1)
 - Mark in review: `⚠️ REGISTRY FLAG: {block} from {registry} — {flag category}`
@@ -502,7 +506,7 @@ Run the gitignore gate from `<gitignore_gate>`. This MUST happen before step 3.
 
 ## Step 3: Detect Dev Server and Capture Screenshots
 
-Run the screenshot approach from `<screenshot_approach>`. Record whether screenshots were captured. Then run its interaction-capture section with `INTERACTION_CAPTURE` set from the `<config>` block's `interaction_capture` value, and record `$INTERACTION_STATUS` verbatim — it is `off` unless `workflow.ui_interaction_capture` is on and a Chrome binary resolved.
+Run the screenshot approach from `<screenshot_approach>`. Then run its interaction-capture section with `INTERACTION_CAPTURE` set from the `<config>` block's `interaction_capture` value, and record `$INTERACTION_STATUS` verbatim.
 
 ## Step 4: Scan Implemented Files
 
@@ -523,11 +527,11 @@ For each of the 6 pillars:
 
 ## Step 6: Registry Safety Audit
 
-Run the registry audit from `<registry_audit>`. Only executes if `components.json` exists AND UI-SPEC.md lists third-party registries. Results feed into UI-REVIEW.md.
+Run the registry audit from `<registry_audit>`.
 
 ## Step 7: Write UI-REVIEW.md
 
-Use output format from `<output_format>`. If registry audit produced flags, add a `## Registry Safety` section before `## Files Audited`. Write to `$PHASE_DIR/$PADDED_PHASE-UI-REVIEW.md`.
+Use output format from `<output_format>`.
 
 ## Step 8: Return Structured Result
 
