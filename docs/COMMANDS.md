@@ -1703,13 +1703,13 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 | `egress-not-consented` | `base_url` is not loopback and `decision_model.allow_remote` is not `true` in the user defaults file |
 | `model-missing` | `decision_model.model` is empty, or the backend does not know the model |
 | `unreachable` | The backend could not be reached or returned an error |
-| `timeout` | A backend call exceeded `decision_model.timeout_ms` |
+| `timeout` | A backend call exceeded `decision_model.timeout_ms`, or the invocation's overall budget ran out before the question was asked |
 | `context-exceeded` | The state did not fit the model context; state is never truncated |
 | `invalid-output` | The completion was empty, cut off, unparseable, or not one of the offered options; or the engine child crashed or overflowed its output buffer |
 | `low-confidence` | The rounded confidence is below the applied floor; carries `confidence` and `below_floor_choice` |
 | `order-inconsistent` | With `order_check`, the picks in the two option orders differed |
 
-After one `unreachable`, `timeout` or `model-missing` result, the remaining questions of that invocation abstain with the same reason and make no further call. Calls within one invocation are strictly sequential.
+After one `unreachable`, `timeout` or `model-missing` result, the remaining questions of that invocation abstain with the same reason and make no further call. Calls within one invocation are strictly sequential. One invocation has an overall budget of `timeout_ms` per backend call plus 5 s, capped at 900 s. When the cap applies, each call's timeout is clipped to the time left, and once less than 1 s (or `timeout_ms`, if smaller) is left the questions not yet asked abstain `timeout`; answers already computed are kept.
 
 **Exit codes.** `0` for every answer, including every abstain. Non-zero only for a usage error: a missing or conflicting flag, an unreadable, oversized or out-of-root request file, invalid JSON, or a structurally malformed request.
 

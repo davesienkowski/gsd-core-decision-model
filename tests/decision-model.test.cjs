@@ -327,6 +327,83 @@ describe('WR-07 spawn bridge and probe through the _spawn seam', () => {
   }
 });
 
+describe('WR-01 child deadline keeps answers computed before the spawn cap', () => {
+  const noul = (i) => ({ type: 'noul', instructions: `Q${i}?` });
+  const yes = (call) => {
+    const options = optionsOf(call);
+    const y = options.find((o) => o.key === 'yes');
+    const n = options.find((o) => o.key === 'no');
+    return { ok: true, status: 200, body: completion(y.label, [{ token: y.label, logprob: Math.log(0.97) }, { token: n.label, logprob: Math.log(0.03) }]) };
+  };
+
+  test('questions reached before the deadline are answered; the rest abstain timeout without a call', async () => {
+    let clock = 0;
+    const h = fakeHttp((call) => { clock += 1000; return yes(call); });
+    const r = await mod.decide(
+      req({ q1: noul(1), q2: noul(2), q3: noul(3) }),
+      { config: cfg({ timeout_ms: 30000 }), http: h.http, deadline: 2500, now: () => clock },
+    );
+    const a = r.results[0].answers;
+    assert.equal(a.q1.status, 'ok');
+    assert.equal(a.q2.status, 'ok');
+    assert.deepEqual(a.q3, { status: 'abstain', reason: 'timeout' });
+    assert.equal(h.calls.length, 2);
+    assert.deepEqual(h.calls.map((c) => c.timeoutMs), [2500, 1500], 'each call is clipped to the time left');
+  });
+
+  test('without a deadline every call gets the configured timeout', async () => {
+    const h = fakeHttp(yes);
+    await mod.decide(req({ q1: noul(1), q2: noul(2) }), { config: cfg({ timeout_ms: 4321 }), http: h.http });
+    assert.deepEqual(h.calls.map((c) => c.timeoutMs), [4321, 4321]);
+  });
+
+  test('jev: an order_check whose reversed call would pass the deadline abstains timeout and keeps the unchecked answers', async () => {
+    let clock = 0;
+    const h = fakeHttp(() => {
+      clock += 5000;
+      return { ok: true, status: 200, body: { answers: { c: { choice: 'a', confidence: 0.9, probabilities: { a: 0.9, b: 0.1 } }, n: { noul: 0.9 } } } };
+    });
+    const r = await mod.decide(
+      req({ c: choiceQ(['a', 'b'], { order_check: true }), n: { type: 'noul', instructions: 'Is it?' } }),
+      {
+        config: cfg({ backend: 'jev', base_url: 'https://jev.example.test', allow_remote: true, min_confidence: 0.5 }),
+        http: h.http, env: { OPENROUTER_API_KEY: 'k' }, deadline: 5500, now: () => clock,
+      },
+    );
+    assert.equal(h.calls.length, 1);
+    assert.deepEqual(r.results[0].answers.c, { status: 'abstain', reason: 'timeout' });
+    assert.equal(r.results[0].answers.n.status, 'ok');
+  });
+
+  test('decideSync hands the child a deadline inside the 900 s kill budget when the cap bites', (t) => {
+    // 2 calls x 600000 ms + 5000 > 900000: the budget is capped.
+    const { project } = syncProject(t, { timeout_ms: 600000 });
+    let input = null;
+    let timeout = null;
+    const before = Date.now();
+    mod.decideSync(TWO_Q, { cwd: project, _spawn: (cmd, args, opts) => { input = JSON.parse(opts.input); timeout = opts.timeout; return { status: 1 }; } });
+    const after = Date.now();
+    assert.equal(timeout, 900000);
+    assert.equal(typeof input.deadline, 'number');
+    assert.ok(input.deadline >= before + 895000 && input.deadline <= after + 895000, `deadline ${input.deadline}`);
+  });
+
+  test('decideSync passes no deadline when every call fits the budget', (t) => {
+    const { project } = syncProject(t, { timeout_ms: 300 });
+    let input = null;
+    mod.decideSync(TWO_Q, { cwd: project, _spawn: (cmd, args, opts) => { input = JSON.parse(opts.input); return { status: 1 }; } });
+    assert.equal(input.deadline, undefined);
+  });
+
+  test('a timeout_ms below the 1 s minimum still allows a call that fits', async () => {
+    let clock = 0;
+    const h = fakeHttp((call) => { clock += 100; return yes(call); });
+    const r = await mod.decide(req({ q1: noul(1) }), { config: cfg({ timeout_ms: 300 }), http: h.http, deadline: 400, now: () => clock });
+    assert.equal(r.results[0].answers.q1.status, 'ok');
+    assert.deepEqual(h.calls.map((c) => c.timeoutMs), [300]);
+  });
+});
+
 describe('D19 per-question min_confidence', () => {
   test('a question floor of 0.6 accepts confidence 0.7 while the config floor is 0.9', async () => {
     const { response, answers } = await ask(

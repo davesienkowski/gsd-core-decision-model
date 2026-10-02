@@ -52,6 +52,8 @@ const MAX_QUESTIONS = 256;
 const MAX_ENVELOPE_BYTES = 8 * 1024 * 1024;
 const MAX_SPAWN_BUDGET_MS = 900000;
 const SPAWN_MARGIN_MS = 5000;
+/** WR-01: with less than this left before the child's deadline, no further backend call is started. */
+const MIN_CALL_MS = 1000;
 const TOP_LOGPROBS = 20;
 
 const KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -229,6 +231,15 @@ interface DecideDeps {
   env?: Readonly<Record<string, string | undefined>>;
   /** Receives one entry per backend-answered question (status and latency only; never content). */
   diagnostics?: Diagnostic[];
+  /**
+   * WR-01: epoch ms by which every backend call must have finished. Each call's
+   * timeout is clipped to the time left, and once less than MIN_CALL_MS is left the
+   * remaining questions abstain timeout without a call, so answers already computed
+   * survive the parent's spawn budget. decideSync sets it for the child.
+   */
+  deadline?: number;
+  /** Clock seam for tests; defaults to Date.now. */
+  now?: () => number;
 }
 
 interface DecisionResponse {
@@ -988,6 +999,17 @@ async function decide(request: unknown, deps: DecideDeps): Promise<DecisionRespo
   const ctx: BackendContext = { config: cfg.config, http: deps.http ?? createFetchHttp(), env: deps.env ?? process.env };
   const breaker: { reason: AbstainReason | null } = { reason: null };
   const results: DecisionResponse['results'] = [];
+  const now = deps.now ?? Date.now;
+  const outOfTime: BackendOutcome = { ok: false, reason: ABSTAIN_REASON.TIMEOUT, httpStatus: null };
+
+  /** WR-01: the context for the next call, its timeout clipped to the deadline, or null when out of time. */
+  const nextCtx = (): BackendContext | null => {
+    if (deps.deadline === undefined) return ctx;
+    const left = deps.deadline - now();
+    if (left < Math.min(MIN_CALL_MS, ctx.config.timeout_ms)) return null;
+    return left >= ctx.config.timeout_ms ? ctx : { ...ctx, config: { ...ctx.config, timeout_ms: left } };
+  };
+  const allOutOfTime = (items: Item[]): Map<string, BackendOutcome> => new Map(items.map((it) => [it.key, outOfTime]));
 
   const note = (o: BackendOutcome): void => {
     if (!o.ok && breaker.reason === null && BREAKER_REASONS.has(o.reason)) breaker.reason = o.reason;
@@ -997,7 +1019,7 @@ async function decide(request: unknown, deps: DecideDeps): Promise<DecisionRespo
     return abstain(o.reason, o.confidence !== undefined ? { confidence: o.confidence } : undefined);
   };
   const record = (id: string, key: string, o: BackendOutcome, startedAt: number): void => {
-    if (deps.diagnostics) deps.diagnostics.push({ id, key, http_status: o.httpStatus, latency_ms: Date.now() - startedAt });
+    if (deps.diagnostics) deps.diagnostics.push({ id, key, http_status: o.httpStatus, latency_ms: now() - startedAt });
   };
 
   for (const r of valid.requests) {
@@ -1015,12 +1037,16 @@ async function decide(request: unknown, deps: DecideDeps): Promise<DecisionRespo
         if (breaker.reason !== null) {
           for (const item of pending) resolved.set(item.key, abstain(breaker.reason));
         } else {
-          const startedAt = Date.now();
-          const outcomes = new Map<string, BackendOutcome>(await backend.decideAll(r.state, pending, ctx, 'original'));
+          const startedAt = now();
+          const firstCtx = nextCtx();
+          const outcomes = new Map<string, BackendOutcome>(
+            firstCtx === null ? allOutOfTime(pending) : await backend.decideAll(r.state, pending, firstCtx, 'original'),
+          );
           for (const o of outcomes.values()) note(o);
           const checks = pending.filter((it) => (it.q as Question).order_check === true && outcomes.get(it.key)?.ok === true);
           if (checks.length > 0 && breaker.reason === null) {
-            const second = await backend.decideAll(r.state, checks, ctx, 'reversed');
+            const secondCtx = nextCtx();
+            const second = secondCtx === null ? allOutOfTime(checks) : await backend.decideAll(r.state, checks, secondCtx, 'reversed');
             for (const o of second.values()) note(o);
             for (const it of checks) {
               const again = second.get(it.key) ?? { ok: false, reason: ABSTAIN_REASON.INVALID_OUTPUT, httpStatus: null } as const;
@@ -1037,11 +1063,13 @@ async function decide(request: unknown, deps: DecideDeps): Promise<DecisionRespo
         for (const item of pending) {
           if (breaker.reason !== null) { resolved.set(item.key, abstain(breaker.reason)); continue; }
           const q = item.q as Question;
-          const startedAt = Date.now();
-          let outcome = await backend.decideOne(q, r.state, ctx, 'original');
+          const startedAt = now();
+          const firstCtx = nextCtx();
+          let outcome = firstCtx === null ? outOfTime : await backend.decideOne(q, r.state, firstCtx, 'original');
           note(outcome);
           if (outcome.ok && q.order_check === true) {
-            const second = await backend.decideOne(q, r.state, ctx, 'reversed');
+            const secondCtx = nextCtx();
+            const second = secondCtx === null ? outOfTime : await backend.decideOne(q, r.state, secondCtx, 'reversed');
             note(second);
             outcome = mergeOrder(outcome, second);
           }
@@ -1180,13 +1208,18 @@ function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
   if (calls === 0) return without(ABSTAIN_REASON.INVALID_OUTPUT);
 
   const spawn: SpawnFn = opts._spawn ?? (spawnSync as unknown as SpawnFn);
-  const budget = Math.min(cfg.config.timeout_ms * calls + SPAWN_MARGIN_MS, MAX_SPAWN_BUDGET_MS);
+  const uncapped = cfg.config.timeout_ms * calls + SPAWN_MARGIN_MS;
+  const budget = Math.min(uncapped, MAX_SPAWN_BUDGET_MS);
+  // WR-01: when the cap bites, the child stops starting calls SPAWN_MARGIN_MS before the
+  // kill, so it returns the answers it has and only the rest abstain timeout. Uncapped,
+  // every call already fits (each is bounded by timeout_ms), so no deadline is passed.
+  const deadline = uncapped > MAX_SPAWN_BUDGET_MS ? Date.now() + budget - SPAWN_MARGIN_MS : undefined;
   let res: SpawnResultLike;
   try {
     res = spawn(
       process.execPath,
       [__filename, '--decide-child'],
-      { ...CHILD_SPAWN_OPTS, input: JSON.stringify({ mode: 'decide', request, config: cfg.config }), timeout: budget },
+      { ...CHILD_SPAWN_OPTS, input: JSON.stringify({ mode: 'decide', request, config: cfg.config, deadline }), timeout: budget },
     );
   } catch {
     return without(ABSTAIN_REASON.INVALID_OUTPUT);
@@ -1284,7 +1317,8 @@ function readPayload(): Json {
 async function childDecide(): Promise<void> {
   const payload = readPayload();
   const diagnostics: Diagnostic[] = [];
-  const response = await decide(payload['request'], { config: payload['config'], http: createFetchHttp(), diagnostics });
+  const deadline = typeof payload['deadline'] === 'number' && Number.isFinite(payload['deadline']) ? payload['deadline'] : undefined;
+  const response = await decide(payload['request'], { config: payload['config'], http: createFetchHttp(), diagnostics, deadline });
   // Let the process exit naturally: process.exit after a piped write can truncate stdout.
   process.stdout.write(JSON.stringify({ response, diagnostics }));
 }
