@@ -69,6 +69,59 @@ const SITES = [
     keep: ["Read each file to verify classification. Don't classify based on filename alone."],
     must: ['present_classification'],
   },
+  {
+    file: 'gsd-core/references/gate-prompts.md',
+    id: 'gate-reply',
+    maxBytes: 650,
+    keep: [
+      '- Always handle the "Other" case (user typed a freeform response instead of selecting)',
+      '- Max 4 options per prompt -- if more are needed, use a 2-step flow',
+    ],
+    must: ['blocking-human', 'none'],
+  },
+  {
+    file: 'gsd-core/references/questioning.md',
+    id: 'gate-reply',
+    maxBytes: 650,
+    keep: ['**When the user wants to explain freely, STOP using AskUserQuestion.**'],
+    must: ['none'],
+  },
+  {
+    file: 'gsd-core/workflows/discuss-phase/modes/text.md',
+    id: 'gate-reply',
+    maxBytes: 650,
+    keep: ['- Free text \u2192 treated as "Other" \u2014 reflect it back, confirm, then proceed'],
+    must: ['none'],
+  },
+  {
+    file: 'gsd-core/workflows/manager.md',
+    id: 'gate-reply',
+    maxBytes: 650,
+    keep: ['**On "Other" (free text):** Parse intent'],
+    must: ['none'],
+  },
+  {
+    file: 'gsd-core/workflows/verify-work.md',
+    id: 'uat-reply',
+    maxBytes: 1000,
+    keep: [
+      '- "later", "future", "follow-up", "next version", "out of scope", "nice to have", "not now", "defer", "down the road", "separate phase", "phase 2"',
+      '- Default if unclear: major',
+      '- Contains: crash, error, exception, fails, broken, unusable \u2192 blocker',
+      'Note: Blocked tests do NOT go into the Gaps section',
+    ],
+    must: ['#1921', 'empty reply'],
+  },
+  {
+    file: 'gsd-core/templates/UAT.md',
+    id: 'uat-reply',
+    maxBytes: 500,
+    keep: [
+      'Default: **major** (safe default, user can clarify if wrong)',
+      '- If issue: add `reported` (verbatim) and `severity` (inferred)',
+    ],
+    must: ['decided-by:'],
+  },
 ];
 
 function read(rel) {

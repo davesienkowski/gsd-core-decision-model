@@ -130,3 +130,62 @@ Eligible: every file add-tests collected in `analyze_implementation`.
 State: the file-batch builder at 3500 chars over every file path in the SUMMARY's changed-files list.
 
 Apply, per file by id: an `ok` answer pre-fills that file's category, and its `decided-by:` line is the brief reason in the `present_classification` table. Read and classify only the files that abstained, as today. The approval in `present_classification` is unchanged and decides. Abstain or error: classify every file as today.
+
+## site: gate-reply
+
+Eligible: a typed Other or free-text reply to a prompt that offered options, at the consumers of gate-prompts.md, questioning.md, discuss-phase text mode and the manager action menu. Skip the model entirely for a gate marked `blocking-human` and for an empty reply, which keeps today's empty-answer retry. Leave every destructive option out of the criteria, so a reply that means one maps to `none`: an option is destructive when choosing it deletes, overwrites, closes, aborts, rolls back, discards work, overrides or skips a check, or accepts known gaps.
+
+<!-- dm:questions gate-reply -->
+```json
+{
+  "mapped": {
+    "type": "choice",
+    "instructions": "The user was asked the question in state and typed the reply in state. Which offered option does the reply choose?",
+    "criteria": {
+      "o1": "Option 1 label: its description, in shown order",
+      "o2": "Option 2 label: its description",
+      "o3": "Option 3 label: its description",
+      "none": "The reply does not plainly pick exactly one option: it modifies an option, adds conditions, explains in its own words, asks a question, or is ambiguous."
+    }
+  }
+}
+```
+
+State, user-text form: `Question: {question}`, `Options: {N}. {label} ...`, `Reply: {verbatim reply}`. Build one criteria key per offered non-destructive option (o1..oN), keeping the shown order.
+
+Apply: an `ok` answer other than `none` is echoed as `Did you mean: {option}? (decided-by: ...)` and acted on only after the user says yes. A no, `none`, abstain or error runs today's handling of the reply (the questioning freeform rule, the text-mode Other handling, the manager intent parse).
+
+## site: uat-reply
+
+Eligible: every non-empty UAT reply in verify-work `process_response`, ONE request per reply. An empty reply is `pass` with no call.
+
+<!-- dm:questions uat-reply -->
+```json
+{
+  "bucket": {
+    "type": "choice",
+    "instructions": "Which result does the tester's reply give for this test?",
+    "criteria": {
+      "pass": "The expected behavior was seen, or the reply is a bare approval.",
+      "skip": "The tester chose not to or cannot meaningfully test it, and names no blocker.",
+      "blocked": "A prerequisite prevents testing: a server, device, build or third-party service is missing.",
+      "deferred": "An idea for later or another phase, not a defect in the current work.",
+      "issue": "Something is wrong, missing or broken now."
+    }
+  },
+  "severity": {
+    "type": "score",
+    "instructions": "If the reply reports a problem, how severe is it?",
+    "criteria": {
+      "cosmetic": "Visual only: color, font, spacing, alignment.",
+      "minor": "Works but is slow, weird or slightly off.",
+      "major": "Does not work, nothing happens, wrong behavior or missing.",
+      "blocker": "Crash, error, exception, fails completely, unusable."
+    }
+  }
+}
+```
+
+State, user-text form: `Test: {name}`, `Expected: {expected}`, `Reply: {verbatim reply}`.
+
+Apply: an `ok` bucket replaces the keyword match. An `ok` `issue` on a reply that matches the deferred keyword list makes you ask the user once whether it is a gap or a deferred follow-up, and record that answer (#1921). An `ok` `deferred` takes the deferred follow-up path and never writes a gap. `blocked` keeps `blocked_by` from today's keyword table. An `ok` severity is used only when the final result is `issue`. Write the `decided-by:` line into the test entry in the SAME write as the result (no extra UAT write) and show `Recorded: {result}[, severity {s}] (decided-by: ...)` so the user can clarify. The verbatim reply is stored as today. Per question, abstain or error falls back to today's keyword lists (severity default major).
