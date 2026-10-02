@@ -455,11 +455,12 @@ function validateDecisionConfig(raw: unknown): ConfigValidation {
   if (typeof baseUrl === 'string') {
     try {
       const u = new URL(baseUrl);
+      // The endpoint path is appended to base_url, so a query or fragment (IN-08) is refused.
       baseUrlOk = (u.protocol === 'http:' || u.protocol === 'https:') && u.hostname.length > 0
-        && u.username === '' && u.password === '';
+        && u.username === '' && u.password === '' && !/[?#]/.test(baseUrl);
     } catch { baseUrlOk = false; }
   }
-  if (!baseUrlOk) problems.push('base_url must be an absolute http(s) URL without credentials');
+  if (!baseUrlOk) problems.push('base_url must be an absolute http(s) URL without credentials, query or fragment');
   config['base_url'] = baseUrl;
 
   // D21 (WR-06): a backend that sends an API key never sends it as cleartext to another host.

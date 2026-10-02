@@ -862,6 +862,15 @@ describe('egress', () => {
     assert.equal(h.calls[0].url, 'http://192.0.2.1:9/v1/chat/completions');
   });
 
+  test('IN-08: a base_url with a query or fragment is invalid-config; a path is fine', () => {
+    for (const base of ['http://127.0.0.1:1234/?x=1', 'http://127.0.0.1:1234/#f', 'http://127.0.0.1:1234/?']) {
+      assert.equal(mod.validateDecisionConfig(cfg({ base_url: base })).valid, false, base);
+    }
+    for (const base of ['http://127.0.0.1:1234', 'http://127.0.0.1:1234/', 'http://127.0.0.1:1234/v1']) {
+      assert.equal(mod.validateDecisionConfig(cfg({ base_url: base })).valid, true, base);
+    }
+  });
+
   test('isLoopbackUrl rejects non-http schemes and garbage', () => {
     for (const v of ['file:///etc/passwd', 'ftp://127.0.0.1', '127.0.0.1:1234', '', null, 42]) {
       assert.equal(mod.isLoopbackUrl(v), false, String(v));
