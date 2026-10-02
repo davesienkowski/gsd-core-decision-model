@@ -1705,7 +1705,7 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 | `unreachable` | The backend could not be reached or returned an error |
 | `timeout` | A backend call exceeded `decision_model.timeout_ms` |
 | `context-exceeded` | The state did not fit the model context; state is never truncated |
-| `invalid-output` | The completion was empty, cut off, unparseable, or not one of the offered options |
+| `invalid-output` | The completion was empty, cut off, unparseable, or not one of the offered options; or the engine child crashed or overflowed its output buffer |
 | `low-confidence` | The rounded confidence is below the applied floor; carries `confidence` and `below_floor_choice` |
 | `order-inconsistent` | With `order_check`, the picks in the two option orders differed |
 

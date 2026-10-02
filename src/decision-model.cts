@@ -1192,8 +1192,10 @@ function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
     return without(ABSTAIN_REASON.INVALID_OUTPUT);
   }
 
-  if ((res.error && res.error.code === 'ETIMEDOUT') || res.signal) return without(ABSTAIN_REASON.TIMEOUT);
-  if (res.error || res.status !== 0 || typeof res.stdout !== 'string') return without(ABSTAIN_REASON.INVALID_OUTPUT);
+  // Only the budget kill is a timeout. A maxBuffer overflow (ENOBUFS + SIGKILL), a
+  // crash (SIGABRT) or an OOM kill (SIGKILL) is not: retrying it cannot succeed.
+  if (res.error && res.error.code === 'ETIMEDOUT') return without(ABSTAIN_REASON.TIMEOUT);
+  if (res.error || res.signal || res.status !== 0 || typeof res.stdout !== 'string') return without(ABSTAIN_REASON.INVALID_OUTPUT);
   let parsed: unknown;
   try { parsed = JSON.parse(res.stdout); } catch { parsed = null; }
   const response = isPlainObject(parsed) ? parsed['response'] : undefined;

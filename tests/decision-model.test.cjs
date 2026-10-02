@@ -16,6 +16,7 @@ const path = require('node:path');
 
 const fc = require('./helpers/fast-check-setup.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 const mod = require('../gsd-core/bin/lib/decision-model.cjs');
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWX';
@@ -238,6 +239,36 @@ describe('D21 user-scope-only keys (CR-01)', () => {
       assert.equal(mod.validateDecisionConfig({ api_key_env: bad }).valid, false, String(bad));
     }
   });
+});
+
+/** An enabled, valid loopback project for decideSync; returns {project, logFile}. */
+function syncProject(t, over = {}) {
+  const project = scopes(t, {
+    enabled: true, model: 'm', base_url: 'http://127.0.0.1:9', log_path: '.planning/dm.log.jsonl', ...over,
+  });
+  return { project, logFile: path.join(project, '.planning', 'dm.log.jsonl') };
+}
+
+const TWO_Q = { state: 's', questions: { q1: { type: 'noul', instructions: 'One?' }, q2: { type: 'noul', instructions: 'Two?' } } };
+
+function logReasons(logFile) {
+  return splitLines(fs.readFileSync(logFile, 'utf8')).filter(Boolean).map((l) => JSON.parse(l).reason);
+}
+
+describe('WR-02 spawn bridge failure mapping', () => {
+  for (const [label, result, reason] of [
+    ['a budget kill (ETIMEDOUT + SIGKILL)', { status: null, signal: 'SIGKILL', error: Object.assign(new Error('t'), { code: 'ETIMEDOUT' }) }, 'timeout'],
+    ['a maxBuffer overflow (ENOBUFS + SIGKILL)', { status: null, signal: 'SIGKILL', error: Object.assign(new Error('b'), { code: 'ENOBUFS' }) }, 'invalid-output'],
+    ['a crash (SIGABRT)', { status: null, signal: 'SIGABRT' }, 'invalid-output'],
+    ['an OOM-style kill (SIGKILL, no error)', { status: null, signal: 'SIGKILL' }, 'invalid-output'],
+  ]) {
+    test(`${label} abstains ${reason} for every question and is logged`, (t) => {
+      const { project, logFile } = syncProject(t);
+      const r = mod.decideSync(TWO_Q, { cwd: project, _spawn: () => result });
+      for (const k of ['q1', 'q2']) assert.deepEqual(r.results[0].answers[k], { status: 'abstain', reason }, k);
+      assert.deepEqual(logReasons(logFile), [reason, reason]);
+    });
+  }
 });
 
 describe('D19 per-question min_confidence', () => {
