@@ -1709,7 +1709,7 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 | `low-confidence` | The rounded confidence is below the applied floor; carries `confidence` and `below_floor_choice` |
 | `order-inconsistent` | With `order_check`, the picks in the two option orders differed |
 
-After one `unreachable`, `timeout` or `model-missing` result, the remaining questions of that invocation abstain with the same reason and make no further call. Calls within one invocation are strictly sequential. One invocation has an overall budget of `timeout_ms` per backend call plus 5 s, capped at 900 s. When the cap applies, each call's timeout is clipped to the time left, and once less than 1 s (or `timeout_ms`, if smaller) is left the questions not yet asked abstain `timeout`; answers already computed are kept.
+After one `unreachable`, `timeout`, `model-missing` or backend `invalid-config` (for example a rejected key) result, the remaining questions of that invocation abstain with the same reason and make no further call. Calls within one invocation are strictly sequential. One invocation has an overall budget of `timeout_ms` per backend call plus 5 s, capped at 900 s. When the cap applies, each call's timeout is clipped to the time left, and once less than 1 s (or `timeout_ms`, if smaller) is left the questions not yet asked abstain `timeout`; answers already computed are kept.
 
 **Exit codes.** `0` for every answer, including every abstain. Non-zero only for a usage error: a missing or conflicting flag, a `--request` with no value (also next to `--status`), an unreadable, oversized or out-of-root request file, invalid JSON, or a structurally malformed request.
 

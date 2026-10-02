@@ -754,6 +754,20 @@ describe('jev backend (fake HTTP only)', () => {
     assert.deepEqual(r.results[0].answers.s, { status: 'abstain', reason: 'order-inconsistent', confidence: 0.7 });
   });
 
+  test('IN-06: a rejected key (401) trips the breaker, so the key is not sent again', async () => {
+    const h = fakeHttp(() => ({ ok: false, status: 401, body: '{}' }));
+    const r = await mod.decide(
+      { requests: [
+        { id: 'r1', state: 's1', questions: { n: MIXED.n } },
+        { id: 'r2', state: 's2', questions: { n: MIXED.n } },
+      ] },
+      { config: jevCfg(), http: h.http, env: ENV },
+    );
+    assert.equal(h.calls.length, 1);
+    assert.equal(r.results[0].answers.n.reason, 'invalid-config');
+    assert.equal(r.results[1].answers.n.reason, 'invalid-config');
+  });
+
   test('a failed POST trips the breaker for the rest of the invocation', async () => {
     const h = fakeHttp(() => ({ ok: false, status: 0, body: '', timedOut: true }));
     const r = await mod.decide(

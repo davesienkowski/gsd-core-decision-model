@@ -1019,6 +1019,9 @@ const BREAKER_REASONS: ReadonlySet<AbstainReason> = new Set<AbstainReason>([
   ABSTAIN_REASON.UNREACHABLE,
   ABSTAIN_REASON.TIMEOUT,
   ABSTAIN_REASON.MODEL_MISSING,
+  // IN-06: a backend outcome of invalid-config (a rejected or missing key) holds for the
+  // whole invocation, so the key is not sent again to a server that refused it.
+  ABSTAIN_REASON.INVALID_CONFIG,
 ]);
 
 /**
@@ -1027,7 +1030,7 @@ const BREAKER_REASONS: ReadonlySet<AbstainReason> = new Set<AbstainReason>([
  * condition abstains. Writes no file. The capability gate for the CLI lives in
  * decideSync; this function honors `config.enabled` as defense in depth.
  *
- * Circuit breaker: after one unreachable, timeout or model-missing backend result,
+ * Circuit breaker: after one unreachable, timeout, model-missing or invalid-config backend result,
  * every later question of this invocation abstains with the same reason and no
  * further call is made. context-exceeded is per question and does not trip it.
  */
