@@ -34,6 +34,7 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -122,6 +123,10 @@ interface Question {
   type: QuestionType;
   instructions: string;
   criteria?: Record<string, string>;
+  /** D19: per-question confidence floor in [0.5, 1]; replaces the config floor for this question. */
+  min_confidence?: number;
+  /** D19: also ask with the options reversed and abstain order-inconsistent when the picks differ. */
+  order_check?: boolean;
 }
 
 interface Item {
@@ -161,9 +166,21 @@ interface BackendContext {
   env: Readonly<Record<string, string | undefined>>;
 }
 
+type Presentation = 'original' | 'reversed';
+
+type OkOutcome = {
+  ok: true;
+  pick: string;
+  confidence: number;
+  probabilities: Record<string, number>;
+  httpStatus: number | null;
+  score?: number;
+  pYes?: number;
+};
+
 type BackendOutcome =
-  | { ok: true; pick: string; confidence: number; probabilities: Record<string, number>; score?: number; pYes?: number }
-  | { ok: false; reason: AbstainReason; httpStatus: number | null };
+  | OkOutcome
+  | { ok: false; reason: AbstainReason; httpStatus: number | null; confidence?: number };
 
 interface BackendLimits {
   maxOptions: number;
@@ -171,16 +188,30 @@ interface BackendLimits {
   locality: 'local' | 'remote';
 }
 
+/**
+ * A backend implements either decideOne (one HTTP call per question) or decideAll
+ * (one call for all of a request's dispatchable questions, keyed by question key).
+ */
 interface Backend {
   id: string;
   limits(): BackendLimits;
-  decideOne(question: Question, state: unknown, ctx: BackendContext): Promise<BackendOutcome>;
+  decideOne?(question: Question, state: unknown, ctx: BackendContext, presentation: Presentation): Promise<BackendOutcome>;
+  decideAll?(state: unknown, items: Item[], ctx: BackendContext, presentation: Presentation): Promise<Map<string, BackendOutcome>>;
+}
+
+interface Diagnostic {
+  id: string;
+  key: string;
+  http_status: number | null;
+  latency_ms: number;
 }
 
 interface DecideDeps {
   config: unknown;
   http?: HttpDep;
   env?: Readonly<Record<string, string | undefined>>;
+  /** Receives one entry per backend-answered question (status and latency only; never content). */
+  diagnostics?: Diagnostic[];
 }
 
 interface DecisionResponse {
@@ -222,6 +253,15 @@ function questionProblem(q: unknown): QuestionProblem {
   }
   const instructions = q['instructions'];
   if (typeof instructions !== 'string' || instructions.trim().length === 0) return ABSTAIN_REASON.INVALID_REQUEST;
+
+  // D19 optional fields: a wrong type or range abstains this question only.
+  const minConfidence = q['min_confidence'];
+  if (minConfidence !== undefined
+    && (typeof minConfidence !== 'number' || !Number.isFinite(minConfidence) || minConfidence < 0.5 || minConfidence > 1)) {
+    return ABSTAIN_REASON.INVALID_REQUEST;
+  }
+  const orderCheck = q['order_check'];
+  if (orderCheck !== undefined && typeof orderCheck !== 'boolean') return ABSTAIN_REASON.INVALID_REQUEST;
 
   if (type === QUESTION_TYPE.NOUL) {
     return q['criteria'] !== undefined ? ABSTAIN_REASON.INVALID_REQUEST : null;
@@ -318,8 +358,6 @@ function validateRequest(raw: unknown): RequestValidation {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const BACKEND_IDS: ReadonlySet<string> = new Set(['openai-letter']);
-
 function parseBool(v: unknown): boolean | undefined {
   if (typeof v === 'boolean') return v;
   if (v === 'true') return true;
@@ -367,7 +405,7 @@ function validateDecisionConfig(raw: unknown): ConfigValidation {
   } else config['timeout_ms'] = timeout;
 
   const backend = pick('backend');
-  if (typeof backend !== 'string' || !BACKEND_IDS.has(backend)) {
+  if (typeof backend !== 'string' || !hasOwn(BACKENDS, backend)) {
     problems.push('backend must be a registered backend id');
     config['backend'] = backend;
   } else config['backend'] = backend;
@@ -484,20 +522,39 @@ function letterProbabilities(topLogprobs: unknown, labels: readonly string[]): R
 
 interface Option { label: string; key: string; description: string }
 
-function buildOptions(q: Question): Option[] {
+/** An option plus its index in the ORIGINAL level order (a score uses the original index). */
+type IndexedOption = Option & { index: number };
+
+function questionKeys(q: Question): Array<{ key: string; description: string }> {
   if (q.type === QUESTION_TYPE.NOUL) {
-    return [
-      { label: 'A', key: 'yes', description: 'Yes' },
-      { label: 'B', key: 'no', description: 'No' },
-    ];
+    return [{ key: 'yes', description: 'Yes' }, { key: 'no', description: 'No' }];
   }
   const criteria = q.criteria ?? {};
-  return Object.keys(criteria).map((key, i) => ({ label: LETTERS.charAt(i), key, description: criteria[key] }));
+  return Object.keys(criteria).map((key) => ({ key, description: criteria[key] }));
+}
+
+/**
+ * Options in presentation order. Letters are assigned by position, so a reversed
+ * presentation re-letters the options; `index` keeps the original level index.
+ */
+function buildOptions(q: Question, presentation: Presentation): IndexedOption[] {
+  const base = questionKeys(q).map((e, index) => ({ ...e, index }));
+  const ordered = presentation === 'reversed' ? base.reverse() : base;
+  return ordered.map((e, i) => ({ label: LETTERS.charAt(i), key: e.key, description: e.description, index: e.index }));
+}
+
+function stripBase(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, '');
 }
 
 function chatUrl(baseUrl: string): string {
-  const base = baseUrl.replace(/\/+$/, '');
+  const base = stripBase(baseUrl);
   return /\/v1$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+}
+
+function modelsUrl(baseUrl: string): string {
+  const base = stripBase(baseUrl);
+  return /\/v1$/.test(base) ? `${base}/models` : `${base}/v1/models`;
 }
 
 function classifyFailure(res: HttpResult): AbstainReason {
@@ -518,8 +575,9 @@ const openaiLetterBackend: Backend = Object.freeze({
   limits(): BackendLimits {
     return { maxOptions: MAX_CRITERIA, contextTokens: null, locality: 'local' };
   },
-  async decideOne(q: Question, state: unknown, ctx: BackendContext): Promise<BackendOutcome> {
-    const options = buildOptions(q);
+  async decideOne(q: Question, state: unknown, ctx: BackendContext, presentation: Presentation): Promise<BackendOutcome> {
+    const indexed = buildOptions(q, presentation);
+    const options: Option[] = indexed.map((o) => ({ label: o.label, key: o.key, description: o.description }));
     const labels = options.map((o) => o.label);
     const body = {
       model: ctx.config.model,
@@ -559,25 +617,153 @@ const openaiLetterBackend: Backend = Object.freeze({
     if (!Array.isArray(top) || top.length === 0) return bad();
 
     const byLabel = letterProbabilities(top, labels);
+    // Probabilities stay keyed by option key, in the ORIGINAL key order.
     const probabilities: Record<string, number> = {};
-    for (const o of options) probabilities[o.key] = round4(byLabel[o.label]);
-    const picked = options.find((o) => o.label === emitted) as Option;
+    for (const o of [...indexed].sort((a, b) => a.index - b.index)) probabilities[o.key] = round4(byLabel[o.label]);
+    const picked = indexed.find((o) => o.label === emitted) as IndexedOption;
     const confidence = round4(byLabel[emitted]);
+    const httpStatus = res.status;
 
     if (q.type === QUESTION_TYPE.NOUL) {
-      return { ok: true, pick: picked.key, confidence, probabilities, pYes: probabilities['yes'] };
+      return { ok: true, pick: picked.key, confidence, probabilities, httpStatus, pYes: probabilities['yes'] };
     }
     if (q.type === QUESTION_TYPE.SCORE) {
       let score = 0;
-      options.forEach((o, i) => { score += i * (byLabel[o.label]); });
-      return { ok: true, pick: picked.key, confidence, probabilities, score: round4(score) };
+      for (const o of indexed) score += o.index * byLabel[o.label];
+      return { ok: true, pick: picked.key, confidence, probabilities, httpStatus, score: round4(score) };
     }
-    return { ok: true, pick: picked.key, confidence, probabilities };
+    return { ok: true, pick: picked.key, confidence, probabilities, httpStatus };
+  },
+});
+
+// ─── jev backend (hosted decision endpoint; contract-tested with fake HTTP only) ─
+
+function reverseObject(o: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(o).reverse());
+}
+
+/** One question's wire form: choice criteria as given, noul true/false, score as an ordered array. */
+function jevQuestion(q: Question, presentation: Presentation): Json {
+  const reversed = presentation === 'reversed';
+  if (q.type === QUESTION_TYPE.NOUL) {
+    const criteria = reversed ? { false: 'No', true: 'Yes' } : { true: 'Yes', false: 'No' };
+    return { type: q.type, instructions: q.instructions, criteria };
+  }
+  const criteria = q.criteria ?? {};
+  if (q.type === QUESTION_TYPE.SCORE) {
+    const levels = Object.keys(criteria).map((k) => criteria[k]);
+    return { type: q.type, instructions: q.instructions, criteria: reversed ? levels.reverse() : levels };
+  }
+  return { type: q.type, instructions: q.instructions, criteria: reversed ? reverseObject(criteria) : criteria };
+}
+
+function unitNumber(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1 ? v : null;
+}
+
+/** Map one Jev answer onto an outcome, or null when it is missing or ill typed. */
+function mapJevAnswer(q: Question, raw: unknown, presentation: Presentation, httpStatus: number): OkOutcome | null {
+  if (!isPlainObject(raw)) return null;
+
+  if (q.type === QUESTION_TYPE.NOUL) {
+    const p = unitNumber(raw['noul']);
+    if (p === null) return null;
+    const pYes = round4(p);
+    return {
+      ok: true,
+      pick: p >= 0.5 ? 'yes' : 'no',
+      confidence: round4(Math.max(p, 1 - p)),
+      probabilities: { yes: pYes, no: round4(1 - p) },
+      httpStatus,
+      pYes,
+    };
+  }
+
+  const keys = Object.keys(q.criteria ?? {});
+  const n = keys.length;
+  const confidence = unitNumber(raw['confidence']);
+  const probs = raw['probabilities'];
+  if (confidence === null || !isPlainObject(probs)) return null;
+
+  if (q.type === QUESTION_TYPE.CHOICE) {
+    const choice = raw['choice'];
+    if (typeof choice !== 'string' || !keys.includes(choice)) return null;
+    const probabilities: Record<string, number> = {};
+    for (const k of keys) {
+      const v = hasOwn(probs, k) ? unitNumber(probs[k]) : 0;
+      if (v === null) return null;
+      probabilities[k] = round4(v);
+    }
+    return { ok: true, pick: choice, confidence: round4(confidence), probabilities, httpStatus };
+  }
+
+  // score: probabilities are keyed by array position, which is mirrored when reversed.
+  const score = raw['score'];
+  if (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > n - 1) return null;
+  const reversed = presentation === 'reversed';
+  const probabilities: Record<string, number> = {};
+  for (let i = 0; i < n; i += 1) {
+    const slot = String(i);
+    const v = hasOwn(probs, slot) ? unitNumber(probs[slot]) : 0;
+    if (v === null) return null;
+    probabilities[keys[reversed ? n - 1 - i : i]] = round4(v);
+  }
+  let best = keys[0];
+  for (const k of keys) if (probabilities[k] > probabilities[best]) best = k;
+  return {
+    ok: true,
+    pick: best,
+    confidence: round4(confidence),
+    probabilities: Object.fromEntries(keys.map((k) => [k, probabilities[k]])),
+    httpStatus,
+    score: round4(reversed ? (n - 1) - score : score),
+  };
+}
+
+const jevBackend: Backend = Object.freeze({
+  id: 'jev',
+  limits(): BackendLimits {
+    return { maxOptions: MAX_CRITERIA, contextTokens: null, locality: 'remote' };
+  },
+  async decideAll(state: unknown, items: Item[], ctx: BackendContext, presentation: Presentation): Promise<Map<string, BackendOutcome>> {
+    const out = new Map<string, BackendOutcome>();
+    const failAll = (reason: AbstainReason, httpStatus: number | null): Map<string, BackendOutcome> => {
+      for (const it of items) out.set(it.key, { ok: false, reason, httpStatus });
+      return out;
+    };
+
+    // The key comes from the environment only; it goes into one header and nowhere else.
+    const apiKey = ctx.env[ctx.config.api_key_env];
+    if (typeof apiKey !== 'string' || apiKey.trim().length === 0) return failAll(ABSTAIN_REASON.INVALID_CONFIG, null);
+
+    const questions: Record<string, Json> = {};
+    for (const it of items) questions[it.key] = jevQuestion(it.q as Question, presentation);
+    const res = await ctx.http(`${stripBase(ctx.config.base_url)}/api/alpha/decisions`, {
+      method: 'POST',
+      body: JSON.stringify({ model: ctx.config.model, state, questions }),
+      headers: { Authorization: `Bearer ${apiKey.trim()}` },
+      timeoutMs: ctx.config.timeout_ms,
+    });
+    if (!res.ok) {
+      const reason = res.status === 401 || res.status === 403 ? ABSTAIN_REASON.INVALID_CONFIG : classifyFailure(res);
+      return failAll(reason, res.status);
+    }
+
+    let parsed: unknown;
+    try { parsed = JSON.parse(res.body); } catch { return failAll(ABSTAIN_REASON.INVALID_OUTPUT, res.status); }
+    const answers = isPlainObject(parsed) ? parsed['answers'] : undefined;
+    if (!isPlainObject(answers)) return failAll(ABSTAIN_REASON.INVALID_OUTPUT, res.status);
+    for (const it of items) {
+      const mapped = hasOwn(answers, it.key) ? mapJevAnswer(it.q as Question, answers[it.key], presentation, res.status) : null;
+      out.set(it.key, mapped ?? { ok: false, reason: ABSTAIN_REASON.INVALID_OUTPUT, httpStatus: res.status });
+    }
+    return out;
   },
 });
 
 const BACKENDS: Readonly<Record<string, Backend>> = Object.freeze({
   'openai-letter': openaiLetterBackend,
+  jev: jevBackend,
 });
 
 // ─── Answers ──────────────────────────────────────────────────────────────────
@@ -608,7 +794,13 @@ function preResolve(item: Item, cfg: ConfigValidation): Answer | null {
   return null;
 }
 
-function applyFloor(outcome: Extract<BackendOutcome, { ok: true }>, q: Question, floor: number): Answer {
+/** D19: a question's own floor replaces the config floor for that question only. */
+function floorFor(q: Question, config: DecisionConfig): number {
+  return q.min_confidence !== undefined ? q.min_confidence : config.min_confidence;
+}
+
+function applyFloor(outcome: OkOutcome, q: Question, floor: number): Answer {
+  // The comparison uses the already-rounded confidence, so the emitted number and the decision agree.
   if (outcome.confidence < floor) {
     return abstain(ABSTAIN_REASON.LOW_CONFIDENCE, {
       confidence: outcome.confidence,
@@ -625,6 +817,19 @@ function applyFloor(outcome: Extract<BackendOutcome, { ok: true }>, q: Question,
     };
   }
   return { status: 'ok', choice: outcome.pick, confidence: outcome.confidence, probabilities: outcome.probabilities };
+}
+
+/**
+ * D19 order_check: combine the original and the reversed result. A failed second
+ * call carries its own reason; differing picks are order-inconsistent (with the
+ * first confidence); the same pick keeps the first answer at the lower confidence.
+ */
+function mergeOrder(first: OkOutcome, second: BackendOutcome): BackendOutcome {
+  if (!second.ok) return second;
+  if (second.pick !== first.pick) {
+    return { ok: false, reason: ABSTAIN_REASON.ORDER_INCONSISTENT, httpStatus: second.httpStatus, confidence: first.confidence };
+  }
+  return { ...first, confidence: Math.min(first.confidence, second.confidence) };
 }
 
 function envelope(cfg: ConfigValidation, results: DecisionResponse['results']): DecisionResponse {
@@ -651,9 +856,15 @@ function respondWithoutBackend(valid: Extract<RequestValidation, { ok: true }>, 
   return envelope(cfg, results);
 }
 
+/** The number of backend calls the request can cost: one per dispatchable question, two with order_check. */
 function countDispatchable(valid: Extract<RequestValidation, { ok: true }>, cfg: ConfigValidation): number {
   let n = 0;
-  for (const r of valid.requests) for (const item of r.items) if (preResolve(item, cfg) === null) n += 1;
+  for (const r of valid.requests) {
+    for (const item of r.items) {
+      if (preResolve(item, cfg) !== null) continue;
+      n += (item.q as Question).order_check === true ? 2 : 1;
+    }
+  }
   return n;
 }
 
@@ -692,31 +903,94 @@ function assertValid(request: unknown): Extract<RequestValidation, { ok: true }>
   return v;
 }
 
+/** Backend outcomes after which the rest of the invocation is not attempted. */
+const BREAKER_REASONS: ReadonlySet<AbstainReason> = new Set<AbstainReason>([
+  ABSTAIN_REASON.UNREACHABLE,
+  ABSTAIN_REASON.TIMEOUT,
+  ABSTAIN_REASON.MODEL_MISSING,
+]);
+
 /**
  * Answer every question of a request. Backend calls run strictly one at a time.
  * Throws a TypeError only for a structurally malformed request; every other
  * condition abstains. Writes no file. The capability gate for the CLI lives in
  * decideSync; this function honors `config.enabled` as defense in depth.
+ *
+ * Circuit breaker: after one unreachable, timeout or model-missing backend result,
+ * every later question of this invocation abstains with the same reason and no
+ * further call is made. context-exceeded is per question and does not trip it.
  */
 async function decide(request: unknown, deps: DecideDeps): Promise<DecisionResponse> {
   const valid = assertValid(request);
   const cfg = validateDecisionConfig(deps.config);
-  const http = deps.http ?? createFetchHttp();
-  const env = deps.env ?? process.env;
+  const ctx: BackendContext = { config: cfg.config, http: deps.http ?? createFetchHttp(), env: deps.env ?? process.env };
+  const breaker: { reason: AbstainReason | null } = { reason: null };
   const results: DecisionResponse['results'] = [];
 
+  const note = (o: BackendOutcome): void => {
+    if (!o.ok && breaker.reason === null && BREAKER_REASONS.has(o.reason)) breaker.reason = o.reason;
+  };
+  const settle = (o: BackendOutcome, q: Question): Answer => {
+    if (o.ok) return applyFloor(o, q, floorFor(q, cfg.config));
+    return abstain(o.reason, o.confidence !== undefined ? { confidence: o.confidence } : undefined);
+  };
+  const record = (id: string, key: string, o: BackendOutcome, startedAt: number): void => {
+    if (deps.diagnostics) deps.diagnostics.push({ id, key, http_status: o.httpStatus, latency_ms: Date.now() - startedAt });
+  };
+
   for (const r of valid.requests) {
-    const answers: Record<string, Answer> = {};
+    const resolved = new Map<string, Answer>();
+    const pending: Item[] = [];
     for (const item of r.items) {
       const pre = preResolve(item, cfg);
-      if (pre !== null) { answers[item.key] = pre; continue; }
-      const backend = BACKENDS[cfg.config.backend];
-      const q = item.q as Question;
-      const outcome = await backend.decideOne(q, r.state, { config: cfg.config, http, env });
-      answers[item.key] = outcome.ok
-        ? applyFloor(outcome, q, cfg.config.min_confidence)
-        : abstain(outcome.reason);
+      if (pre !== null) resolved.set(item.key, pre); else pending.push(item);
     }
+
+    if (pending.length > 0) {
+      const backend = BACKENDS[cfg.config.backend];
+      if (backend.decideAll !== undefined) {
+        // One call per request for all its dispatchable questions.
+        if (breaker.reason !== null) {
+          for (const item of pending) resolved.set(item.key, abstain(breaker.reason));
+        } else {
+          const startedAt = Date.now();
+          const outcomes = new Map<string, BackendOutcome>(await backend.decideAll(r.state, pending, ctx, 'original'));
+          for (const o of outcomes.values()) note(o);
+          const checks = pending.filter((it) => (it.q as Question).order_check === true && outcomes.get(it.key)?.ok === true);
+          if (checks.length > 0 && breaker.reason === null) {
+            const second = await backend.decideAll(r.state, checks, ctx, 'reversed');
+            for (const o of second.values()) note(o);
+            for (const it of checks) {
+              const again = second.get(it.key) ?? { ok: false, reason: ABSTAIN_REASON.INVALID_OUTPUT, httpStatus: null } as const;
+              outcomes.set(it.key, mergeOrder(outcomes.get(it.key) as OkOutcome, again));
+            }
+          }
+          for (const item of pending) {
+            const o = outcomes.get(item.key) ?? { ok: false, reason: ABSTAIN_REASON.INVALID_OUTPUT, httpStatus: null } as const;
+            record(r.id, item.key, o, startedAt);
+            resolved.set(item.key, settle(o, item.q as Question));
+          }
+        }
+      } else if (backend.decideOne !== undefined) {
+        for (const item of pending) {
+          if (breaker.reason !== null) { resolved.set(item.key, abstain(breaker.reason)); continue; }
+          const q = item.q as Question;
+          const startedAt = Date.now();
+          let outcome = await backend.decideOne(q, r.state, ctx, 'original');
+          note(outcome);
+          if (outcome.ok && q.order_check === true) {
+            const second = await backend.decideOne(q, r.state, ctx, 'reversed');
+            note(second);
+            outcome = mergeOrder(outcome, second);
+          }
+          record(r.id, item.key, outcome, startedAt);
+          resolved.set(item.key, settle(outcome, q));
+        }
+      }
+    }
+
+    const answers: Record<string, Answer> = {};
+    for (const item of r.items) answers[item.key] = resolved.get(item.key) as Answer;
     results.push({ id: r.id, answers });
   }
   return envelope(cfg, results);
@@ -738,6 +1012,90 @@ interface DecideSyncOpts {
   _spawn?: SpawnFn;
 }
 
+function childSpawnOptions(input: string, budgetMs: number): Json {
+  return {
+    input,
+    encoding: 'utf8',
+    timeout: budgetMs,
+    killSignal: 'SIGKILL',
+    maxBuffer: MAX_ENVELOPE_BYTES,
+    windowsHide: true,
+    shell: false,
+  };
+}
+
+/** The question type for the log, only when it is one of the three known values. */
+function loggedType(q: unknown): string | null {
+  if (!isPlainObject(q)) return null;
+  const t = q['type'];
+  return t === QUESTION_TYPE.CHOICE || t === QUESTION_TYPE.NOUL || t === QUESTION_TYPE.SCORE ? t : null;
+}
+
+function finiteOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/**
+ * D14 opt-in call log: one JSON line per answer, appended to decision_model.log_path.
+ * A line carries ids, keys, statuses and numbers only: never the state, the
+ * instructions, the criteria, an env value or the API key. A symlinked target is
+ * refused and any write error is swallowed, so logging never changes the response.
+ * Nothing here touches .gsd-trace.jsonl (ADR-2619).
+ */
+function appendLog(
+  cwd: string,
+  cfg: ConfigValidation,
+  valid: Extract<RequestValidation, { ok: true }>,
+  response: DecisionResponse,
+  diagnostics: unknown[],
+): void {
+  if (!cfg.config.enabled || cfg.config.log_path === '') return;
+  try {
+    /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+    const { tryWithinRoot, PathAcceptance } = require('./security.cjs') as {
+      tryWithinRoot: (c: unknown, r: unknown, p: unknown) => string | null;
+      PathAcceptance: { AbsoluteInsideRoot: unknown };
+    };
+    const target = tryWithinRoot(cfg.config.log_path, cwd, PathAcceptance.AbsoluteInsideRoot);
+    if (target === null) return;
+    try {
+      if (fs.lstatSync(path.resolve(cwd, cfg.config.log_path)).isSymbolicLink()) return;
+      if (fs.lstatSync(target).isSymbolicLink()) return;
+    } catch { /* the file does not exist yet */ }
+
+    const types = new Map<string, string | null>();
+    for (const r of valid.requests) for (const it of r.items) types.set(`${r.id}\u0000${it.key}`, loggedType(it.q));
+    const diag = new Map<string, { http_status: number | null; latency_ms: number | null }>();
+    for (const d of diagnostics) {
+      if (!isPlainObject(d) || typeof d['id'] !== 'string' || typeof d['key'] !== 'string') continue;
+      diag.set(`${d['id']}\u0000${d['key']}`, { http_status: finiteOrNull(d['http_status']), latency_ms: finiteOrNull(d['latency_ms']) });
+    }
+
+    const ts = new Date().toISOString();
+    const lines: string[] = [];
+    for (const r of response.results) {
+      for (const key of Object.keys(r.answers)) {
+        const a = r.answers[key];
+        const id = `${r.id}\u0000${key}`;
+        const d = diag.get(id) ?? { http_status: null, latency_ms: null };
+        const rec: Json = { ts, id: r.id, key, type: types.get(id) ?? null, status: a['status'] };
+        if (typeof a['reason'] === 'string') rec['reason'] = a['reason'];
+        if (typeof a['choice'] === 'string') rec['choice'] = a['choice'];
+        if (typeof a['answer'] === 'string') rec['answer'] = a['answer'];
+        if (finiteOrNull(a['confidence']) !== null) rec['confidence'] = a['confidence'];
+        rec['backend'] = response.backend;
+        rec['model'] = response.model;
+        rec['endpoint_host'] = response.endpoint_host;
+        rec['http_status'] = d.http_status;
+        rec['latency_ms'] = d.latency_ms;
+        lines.push(`${JSON.stringify(rec)}\n`);
+      }
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.appendFileSync(target, lines.join(''), 'utf8');
+  } catch { /* logging never changes the response */ }
+}
+
 /**
  * Synchronous form of decide: applies the capability gate and the resolved
  * config, then runs the async engine in a bounded child. Never throws for an
@@ -752,57 +1110,136 @@ function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
     ...resolved,
     config: { ...resolved.config, enabled: resolved.config.enabled && isCapabilityActive(CAPABILITY_ID, opts.cwd) },
   };
+  const finish = (response: DecisionResponse, diagnostics: unknown[]): DecisionResponse => {
+    appendLog(opts.cwd, cfg, valid, response, diagnostics);
+    return response;
+  };
+  const without = (reason: AbstainReason): DecisionResponse => finish(respondWithoutBackend(valid, cfg, reason), []);
 
   const calls = countDispatchable(valid, cfg);
-  if (calls === 0) return respondWithoutBackend(valid, cfg, ABSTAIN_REASON.INVALID_OUTPUT);
+  if (calls === 0) return without(ABSTAIN_REASON.INVALID_OUTPUT);
 
   const spawn: SpawnFn = opts._spawn ?? (spawnSync as unknown as SpawnFn);
   const budget = Math.min(cfg.config.timeout_ms * calls + SPAWN_MARGIN_MS, MAX_SPAWN_BUDGET_MS);
   let res: SpawnResultLike;
   try {
-    res = spawn(process.execPath, [__filename, '--decide-child'], {
-      input: JSON.stringify({ mode: 'decide', request, config: cfg.config }),
-      encoding: 'utf8',
-      timeout: budget,
-      killSignal: 'SIGKILL',
-      maxBuffer: MAX_ENVELOPE_BYTES,
-      windowsHide: true,
-      shell: false,
-    });
+    res = spawn(
+      process.execPath,
+      [__filename, '--decide-child'],
+      childSpawnOptions(JSON.stringify({ mode: 'decide', request, config: cfg.config }), budget),
+    );
   } catch {
-    return respondWithoutBackend(valid, cfg, ABSTAIN_REASON.INVALID_OUTPUT);
+    return without(ABSTAIN_REASON.INVALID_OUTPUT);
   }
 
-  if ((res.error && res.error.code === 'ETIMEDOUT') || res.signal) {
-    return respondWithoutBackend(valid, cfg, ABSTAIN_REASON.TIMEOUT);
-  }
-  if (res.error || res.status !== 0 || typeof res.stdout !== 'string') {
-    return respondWithoutBackend(valid, cfg, ABSTAIN_REASON.INVALID_OUTPUT);
-  }
+  if ((res.error && res.error.code === 'ETIMEDOUT') || res.signal) return without(ABSTAIN_REASON.TIMEOUT);
+  if (res.error || res.status !== 0 || typeof res.stdout !== 'string') return without(ABSTAIN_REASON.INVALID_OUTPUT);
   let parsed: unknown;
   try { parsed = JSON.parse(res.stdout); } catch { parsed = null; }
   const response = isPlainObject(parsed) ? parsed['response'] : undefined;
-  if (!isPlainObject(response) || !Array.isArray(response['results'])) {
-    return respondWithoutBackend(valid, cfg, ABSTAIN_REASON.INVALID_OUTPUT);
+  if (!isPlainObject(response) || !Array.isArray(response['results'])) return without(ABSTAIN_REASON.INVALID_OUTPUT);
+  const diagnostics = isPlainObject(parsed) && Array.isArray(parsed['diagnostics']) ? (parsed['diagnostics'] as unknown[]) : [];
+  return finish(response as unknown as DecisionResponse, diagnostics);
+}
+
+// ─── statusSync and provenance ────────────────────────────────────────────────
+
+const PROBE_CAP_MS = 10000;
+
+interface StatusOpts {
+  cwd: string;
+  probe?: boolean;
+  _spawn?: SpawnFn;
+}
+
+interface StatusResult {
+  active: boolean;
+  backend: string;
+  model: string;
+  endpoint_host: string | null;
+  min_confidence: number;
+  reachable: boolean | null;
+}
+
+/**
+ * `decide --status`: whether the capability is active and what it is configured
+ * for. No network call unless `probe` is true, the capability is active, the
+ * config is valid, egress is permitted and the backend is openai-letter; the probe
+ * is one GET to the models URL, run in a bounded child.
+ */
+function statusSync(opts: StatusOpts): StatusResult {
+  const resolved = resolveDecisionConfig(opts.cwd);
+  /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+  const { isCapabilityActive } = require('./capability-state.cjs') as { isCapabilityActive: (id: string, cwd: string) => boolean };
+  const active = isCapabilityActive(CAPABILITY_ID, opts.cwd);
+  const c = resolved.config;
+
+  let reachable: boolean | null = null;
+  const egressOk = c.allow_remote || isLoopbackUrl(c.base_url);
+  if (opts.probe === true && active && resolved.valid && egressOk && c.backend === 'openai-letter') {
+    const spawn: SpawnFn = opts._spawn ?? (spawnSync as unknown as SpawnFn);
+    const probeMs = Math.min(c.timeout_ms, PROBE_CAP_MS);
+    reachable = false;
+    try {
+      const res = spawn(
+        process.execPath,
+        [__filename, '--probe-child'],
+        childSpawnOptions(JSON.stringify({ config: c }), probeMs + SPAWN_MARGIN_MS),
+      );
+      if (!res.error && !res.signal && res.status === 0 && typeof res.stdout === 'string') {
+        const parsed: unknown = JSON.parse(res.stdout);
+        reachable = isPlainObject(parsed) && parsed['reachable'] === true;
+      }
+    } catch { reachable = false; }
   }
-  return response as unknown as DecisionResponse;
+
+  return {
+    active,
+    backend: c.backend,
+    model: c.model,
+    endpoint_host: endpointHost(c.base_url),
+    min_confidence: c.min_confidence,
+    reachable,
+  };
+}
+
+/** D14 provenance line for prose sites. */
+function formatProvenance(confidence: number, backend: string): string {
+  return `decided-by: decision-model (conf ${confidence.toFixed(2)}, backend ${backend})`;
 }
 
 // ─── Child entry ──────────────────────────────────────────────────────────────
 
-async function childDecide(): Promise<void> {
+function readPayload(): Json {
   const payload: unknown = JSON.parse(fs.readFileSync(0, 'utf8'));
   if (!isPlainObject(payload)) throw new TypeError('decision-model: child payload must be an object');
-  const response = await decide(payload['request'], { config: payload['config'], http: createFetchHttp() });
+  return payload;
+}
+
+async function childDecide(): Promise<void> {
+  const payload = readPayload();
+  const diagnostics: Diagnostic[] = [];
+  const response = await decide(payload['request'], { config: payload['config'], http: createFetchHttp(), diagnostics });
   // Let the process exit naturally: process.exit after a piped write can truncate stdout.
-  process.stdout.write(JSON.stringify({ response }));
+  process.stdout.write(JSON.stringify({ response, diagnostics }));
+}
+
+async function childProbe(): Promise<void> {
+  const cfg = validateDecisionConfig(readPayload()['config']);
+  const res = await createFetchHttp()(modelsUrl(cfg.config.base_url), {
+    method: 'GET',
+    timeoutMs: Math.min(cfg.config.timeout_ms, PROBE_CAP_MS),
+  });
+  process.stdout.write(JSON.stringify({ reachable: res.ok }));
 }
 
 if (require.main === module) {
   if (process.argv[2] === '--decide-child') {
     childDecide().catch(() => { process.exitCode = 1; });
+  } else if (process.argv[2] === '--probe-child') {
+    childProbe().catch(() => { process.exitCode = 1; });
   } else {
-    process.stderr.write('usage: decision-model.cjs --decide-child (internal; reads a JSON payload on stdin)\n');
+    process.stderr.write('usage: decision-model.cjs --decide-child | --probe-child (internal; read a JSON payload on stdin)\n');
     process.exitCode = 2;
   }
 }
@@ -816,10 +1253,12 @@ export = {
   BACKENDS,
   decide,
   decideSync,
+  statusSync,
   validateRequest,
   validateDecisionConfig,
   resolveDecisionConfig,
   isLoopbackUrl,
   letterProbabilities,
+  formatProvenance,
   createFetchHttp,
 };

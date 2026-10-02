@@ -1,0 +1,791 @@
+'use strict';
+
+/**
+ * decision-model engine tests (quick 261001-wza, Task 2).
+ *
+ * In-process: the async `decide` is driven with an injected fake HttpDep, so
+ * there is no network, no sleep and no clock. The CLI contract (registry
+ * dispatch, router, spawnSync child, real fetch) lives in
+ * decision-model-command-router.test.cjs.
+ */
+
+const { describe, test } = require('node:test');
+const assert = require('node:assert/strict');
+
+const fc = require('./helpers/fast-check-setup.cjs');
+const mod = require('../gsd-core/bin/lib/decision-model.cjs');
+
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWX';
+
+/** A base config that is enabled and valid; individual tests override fields. */
+function cfg(over = {}) {
+  return { enabled: true, model: 'm', base_url: 'http://127.0.0.1:1234', ...over };
+}
+
+function criteriaOf(n, prefix = 'k') {
+  const c = {};
+  for (let i = 0; i < n; i += 1) c[`${prefix}${i}`] = `description ${i}`;
+  return c;
+}
+
+function choiceQ(keys = ['a', 'b', 'c'], extra = {}) {
+  const criteria = {};
+  for (const k of keys) criteria[k] = `the ${k} option`;
+  return { type: 'choice', instructions: 'Pick one.', criteria, ...extra };
+}
+
+function req(questions, state = 'some state') {
+  return { state, questions };
+}
+
+/**
+ * A fake HttpDep. `handler(call, index)` returns {ok, status, body}; body may be
+ * an object (stringified). It records calls and the number in flight.
+ */
+function fakeHttp(handler) {
+  const calls = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const http = async (url, opts) => {
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    const call = {
+      url,
+      method: opts.method,
+      headers: opts.headers || {},
+      timeoutMs: opts.timeoutMs,
+      body: opts.body === undefined ? null : JSON.parse(opts.body),
+    };
+    calls.push(call);
+    await Promise.resolve();
+    const r = handler(call, calls.length - 1);
+    inFlight -= 1;
+    const body = typeof r.body === 'string' ? r.body : JSON.stringify(r.body === undefined ? '' : r.body);
+    return { ok: r.ok, status: r.status, body, timedOut: r.timedOut, error: r.error };
+  };
+  return { http, calls, get maxInFlight() { return maxInFlight; } };
+}
+
+function completion(content, top, extra = {}) {
+  return {
+    choices: [{
+      message: { content },
+      finish_reason: 'stop',
+      logprobs: { content: [{ top_logprobs: top }] },
+      ...extra,
+    }],
+  };
+}
+
+/** The options the engine sent in an openai-letter call. */
+function optionsOf(call) {
+  return JSON.parse(call.body.messages[1].content).options;
+}
+
+/**
+ * An openai-letter handler that picks `wantKey(call, index)` among the options
+ * with probability `p` (the rest share 1 - p).
+ */
+function pickByKey(wantKey, p = 0.995) {
+  return (call, i) => {
+    const options = optionsOf(call);
+    const want = wantKey(call, i, options);
+    const rest = options.length - 1;
+    const top = options.map((o) => ({
+      token: o.label,
+      logprob: Math.log(o.key === want ? p : (1 - p) / rest),
+    }));
+    const label = options.find((o) => o.key === want).label;
+    return { ok: true, status: 200, body: completion(label, top) };
+  };
+}
+
+/** A handler that always emits one letter with a fixed 2-way probability split. */
+function twoWay(label, p) {
+  return () => ({
+    ok: true,
+    status: 200,
+    body: completion(label, [
+      { token: label, logprob: Math.log(p) },
+      { token: label === 'A' ? 'B' : 'A', logprob: Math.log(1 - p) },
+    ]),
+  });
+}
+
+async function ask(questions, { config = cfg(), handler, state, env } = {}) {
+  const h = fakeHttp(handler || pickByKey(() => 'a'));
+  const response = await mod.decide(req(questions, state), { config, http: h.http, env });
+  return { response, answers: response.results[0].answers, h };
+}
+
+describe('exports', () => {
+  test('the library exposes the documented surface', () => {
+    for (const name of [
+      'decide', 'decideSync', 'statusSync', 'validateRequest', 'validateDecisionConfig',
+      'resolveDecisionConfig', 'isLoopbackUrl', 'letterProbabilities', 'formatProvenance',
+      'createFetchHttp',
+    ]) {
+      assert.equal(typeof mod[name], 'function', `${name} must be exported as a function`);
+    }
+    assert.equal(typeof mod.SYSTEM_PROMPT, 'string');
+    assert.equal(Object.keys(mod.ABSTAIN_REASON).length, 12);
+    assert.ok(Object.isFrozen(mod.ABSTAIN_REASON));
+  });
+
+  test('formatProvenance renders the D14 line', () => {
+    assert.equal(typeof mod.formatProvenance, 'function');
+    assert.equal(
+      mod.formatProvenance(0.97, 'openai-letter'),
+      'decided-by: decision-model (conf 0.97, backend openai-letter)',
+    );
+  });
+});
+
+describe('D19 per-question min_confidence', () => {
+  test('a question floor of 0.6 accepts confidence 0.7 while the config floor is 0.9', async () => {
+    const { response, answers } = await ask(
+      { q: choiceQ(['a', 'b'], { min_confidence: 0.6 }) },
+      { config: cfg({ min_confidence: 0.9 }), handler: twoWay('A', 0.7) },
+    );
+    assert.equal(answers.q.status, 'ok');
+    assert.equal(answers.q.choice, 'a');
+    assert.equal(answers.q.confidence, 0.7);
+    assert.equal(response.min_confidence, 0.9, 'the response reports the config floor');
+  });
+
+  test('a question floor of 0.95 abstains low-confidence at confidence 0.93 and keeps the would-be choice', async () => {
+    const { answers } = await ask(
+      { q: choiceQ(['a', 'b'], { min_confidence: 0.95 }) },
+      { config: cfg({ min_confidence: 0.5 }), handler: twoWay('A', 0.93) },
+    );
+    assert.deepEqual(answers.q, {
+      status: 'abstain', reason: 'low-confidence', confidence: 0.93, below_floor_choice: 'a',
+    });
+  });
+
+  test('0.49, 1.01 and the string 0.7 abstain invalid-request with zero calls; 0.5 and 1 are accepted', async () => {
+    const bad = [0.49, 1.01, '0.7', null, Number.NaN];
+    const questions = {};
+    bad.forEach((v, i) => { questions[`bad${i}`] = choiceQ(['a', 'b'], { min_confidence: v }); });
+    const h = fakeHttp(pickByKey(() => 'a'));
+    const r = await mod.decide(req(questions), { config: cfg(), http: h.http });
+    for (const k of Object.keys(questions)) {
+      assert.deepEqual(r.results[0].answers[k], { status: 'abstain', reason: 'invalid-request' }, k);
+    }
+    assert.equal(h.calls.length, 0);
+
+    const { answers } = await ask({
+      lo: choiceQ(['a', 'b'], { min_confidence: 0.5 }),
+      hi: choiceQ(['a', 'b'], { min_confidence: 1 }),
+    }, { handler: pickByKey(() => 'a', 0.999) });
+    assert.equal(answers.lo.status, 'ok');
+    assert.equal(answers.hi.status, 'abstain', 'a floor of 1 is accepted but a 0.999 answer is below it');
+    assert.equal(answers.hi.reason, 'low-confidence');
+  });
+});
+
+describe('D19 order_check', () => {
+  test('a consistent model is asked twice; the answer keeps the pick with the lower confidence', async () => {
+    const h = fakeHttp((call, i) => pickByKey(() => 'b', i === 0 ? 0.97 : 0.92)(call, i));
+    const r = await mod.decide(
+      req({ q: choiceQ(['a', 'b', 'c'], { order_check: true }) }),
+      { config: cfg(), http: h.http },
+    );
+    assert.equal(h.calls.length, 2);
+    const a = r.results[0].answers.q;
+    assert.equal(a.status, 'ok');
+    assert.equal(a.choice, 'b');
+    assert.ok(a.confidence <= 0.92 + 1e-9 && a.confidence > 0.9, `confidence ${a.confidence}`);
+
+    const first = optionsOf(h.calls[0]);
+    const second = optionsOf(h.calls[1]);
+    assert.deepEqual(first.map((o) => `${o.label}=${o.key}`), ['A=a', 'B=b', 'C=c']);
+    assert.deepEqual(second.map((o) => `${o.label}=${o.key}`), ['A=c', 'B=b', 'C=a']);
+  });
+
+  test('a position-biased model (always A) abstains order-inconsistent with the first confidence', async () => {
+    const { answers, h } = await ask(
+      { q: choiceQ(['a', 'b'], { order_check: true }) },
+      { handler: twoWay('A', 0.96) },
+    );
+    assert.equal(h.calls.length, 2);
+    assert.deepEqual(answers.q, { status: 'abstain', reason: 'order-inconsistent', confidence: 0.96 });
+  });
+
+  test('a non-boolean order_check abstains invalid-request', async () => {
+    const { answers, h } = await ask({ q: choiceQ(['a', 'b'], { order_check: 'yes' }) });
+    assert.deepEqual(answers.q, { status: 'abstain', reason: 'invalid-request' });
+    assert.equal(h.calls.length, 0);
+  });
+
+  test('when the first call abstains there is no second call and the reason carries through', async () => {
+    const { answers, h } = await ask(
+      { q: choiceQ(['a', 'b'], { order_check: true }) },
+      { handler: () => ({ ok: false, status: 500, body: 'exceed_context_size_error' }) },
+    );
+    assert.equal(h.calls.length, 1);
+    assert.deepEqual(answers.q, { status: 'abstain', reason: 'context-exceeded' });
+  });
+
+  test('a noul question is checked with yes and no swapped', async () => {
+    const h = fakeHttp((call) => {
+      const options = optionsOf(call);
+      const yes = options.find((o) => o.key === 'yes');
+      return {
+        ok: true,
+        status: 200,
+        body: completion(yes.label, [
+          { token: yes.label, logprob: Math.log(0.97) },
+          { token: options.find((o) => o.key === 'no').label, logprob: Math.log(0.03) },
+        ]),
+      };
+    });
+    const r = await mod.decide(
+      req({ n: { type: 'noul', instructions: 'Is it?', order_check: true } }),
+      { config: cfg(), http: h.http },
+    );
+    assert.equal(h.calls.length, 2);
+    assert.deepEqual(optionsOf(h.calls[1]).map((o) => o.key), ['no', 'yes']);
+    assert.equal(r.results[0].answers.n.status, 'ok');
+    assert.equal(r.results[0].answers.n.answer, 'yes');
+  });
+});
+
+describe('jev backend (fake HTTP only)', () => {
+  const SECRET = 'sk-test-secret-9d41';
+  const jevCfg = (over = {}) => cfg({
+    backend: 'jev', base_url: 'https://jev.example.test/', allow_remote: true, min_confidence: 0.5, ...over,
+  });
+  const ENV = { OPENROUTER_API_KEY: SECRET };
+
+  const MIXED = {
+    c: choiceQ(['a', 'b']),
+    n: { type: 'noul', instructions: 'Is it?' },
+    s: { type: 'score', instructions: 'How much?', criteria: { low: 'not much', mid: 'some', high: 'lots' } },
+  };
+
+  function jevHandler(answers) {
+    return () => ({ ok: true, status: 200, body: { model: 'm', answers } });
+  }
+
+  test('sends one authenticated POST and maps choice, noul and score answers', async () => {
+    const h = fakeHttp(jevHandler({
+      c: { choice: 'b', confidence: 0.95, probabilities: { b: 0.95 } },
+      n: { noul: 0.8 },
+      s: { score: 1.4, confidence: 0.9, probabilities: { 0: 0.1, 1: 0.5, 2: 0.4 }, legend: ['x', 'y', 'z'] },
+    }));
+    const r = await mod.decide(req(MIXED), { config: jevCfg(), http: h.http, env: ENV });
+
+    assert.equal(h.calls.length, 1);
+    const call = h.calls[0];
+    assert.equal(call.url, 'https://jev.example.test/api/alpha/decisions');
+    assert.equal(call.method, 'POST');
+    assert.equal(call.headers.Authorization, `Bearer ${SECRET}`);
+    assert.deepEqual(Object.keys(call.body), ['model', 'state', 'questions']);
+    assert.equal(call.body.model, 'm');
+    assert.equal(call.body.state, 'some state');
+    assert.deepEqual(call.body.questions.c.criteria, { a: 'the a option', b: 'the b option' });
+    assert.deepEqual(call.body.questions.n.criteria, { true: 'Yes', false: 'No' });
+    assert.deepEqual(call.body.questions.s.criteria, ['not much', 'some', 'lots']);
+
+    const a = r.results[0].answers;
+    assert.deepEqual(a.c, { status: 'ok', choice: 'b', confidence: 0.95, probabilities: { a: 0, b: 0.95 } });
+    assert.deepEqual(a.n, { status: 'ok', answer: 'yes', p_yes: 0.8, confidence: 0.8 });
+    assert.deepEqual(a.s, {
+      status: 'ok', choice: 'mid', score: 1.4, confidence: 0.9,
+      probabilities: { low: 0.1, mid: 0.5, high: 0.4 },
+    });
+    assert.equal(r.backend, 'jev');
+    assert.ok(!JSON.stringify(r).includes(SECRET), 'the key never appears in the response');
+  });
+
+  test('a noul answer below 0.5 is no with confidence 1 - p; a score tie takes the first level', async () => {
+    const h = fakeHttp(jevHandler({
+      n: { noul: 0.25 },
+      s: { score: 0.6, confidence: 0.9, probabilities: { 0: 0.4, 1: 0.4, 2: 0.2 } },
+    }));
+    const r = await mod.decide(req({ n: MIXED.n, s: MIXED.s }), { config: jevCfg(), http: h.http, env: ENV });
+    assert.deepEqual(r.results[0].answers.n, { status: 'ok', answer: 'no', p_yes: 0.25, confidence: 0.75 });
+    assert.equal(r.results[0].answers.s.choice, 'low');
+  });
+
+  test('a missing or ill-typed answer is invalid-output', async () => {
+    const h = fakeHttp(jevHandler({
+      c: { choice: 'zzz', confidence: 0.9, probabilities: { a: 0.9 } },
+      n: { noul: 'high' },
+    }));
+    const r = await mod.decide(req(MIXED), { config: jevCfg(), http: h.http, env: ENV });
+    for (const k of ['c', 'n', 's']) {
+      assert.deepEqual(r.results[0].answers[k], { status: 'abstain', reason: 'invalid-output' }, k);
+    }
+    const bad = fakeHttp(() => ({ ok: true, status: 200, body: 'not json at all' }));
+    const r2 = await mod.decide(req({ n: MIXED.n }), { config: jevCfg(), http: bad.http, env: ENV });
+    assert.equal(r2.results[0].answers.n.reason, 'invalid-output');
+  });
+
+  test('HTTP 401 and 403 are invalid-config; other failures classify like openai-letter', async () => {
+    for (const [status, reason] of [[401, 'invalid-config'], [403, 'invalid-config'], [500, 'unreachable'], [404, 'model-missing']]) {
+      const h = fakeHttp(() => ({ ok: false, status, body: '{}' }));
+      const r = await mod.decide(req({ n: MIXED.n }), { config: jevCfg(), http: h.http, env: ENV });
+      assert.equal(r.results[0].answers.n.reason, reason, `status ${status}`);
+    }
+  });
+
+  test('a missing or empty key is invalid-config with zero HTTP calls', async () => {
+    for (const env of [{}, { OPENROUTER_API_KEY: '' }, { OPENROUTER_API_KEY: '   ' }]) {
+      const h = fakeHttp(jevHandler({}));
+      const r = await mod.decide(req({ n: MIXED.n }), { config: jevCfg(), http: h.http, env });
+      assert.deepEqual(r.results[0].answers.n, { status: 'abstain', reason: 'invalid-config' });
+      assert.equal(h.calls.length, 0);
+    }
+  });
+
+  test('api_key_env names the variable that is read', async () => {
+    const h = fakeHttp(jevHandler({ n: { noul: 0.9 } }));
+    const r = await mod.decide(
+      req({ n: MIXED.n }),
+      { config: jevCfg({ api_key_env: 'MY_JEV_KEY' }), http: h.http, env: { MY_JEV_KEY: 'k2', OPENROUTER_API_KEY: SECRET } },
+    );
+    assert.equal(h.calls[0].headers.Authorization, 'Bearer k2');
+    assert.equal(r.results[0].answers.n.status, 'ok');
+  });
+
+  test('a batch sends one POST per request, in order', async () => {
+    const h = fakeHttp(jevHandler({ n: { noul: 0.9 } }));
+    const r = await mod.decide(
+      { requests: [{ id: 'r2', state: 's2', questions: { n: MIXED.n } }, { id: 'r1', state: 's1', questions: { n: MIXED.n } }] },
+      { config: jevCfg(), http: h.http, env: ENV },
+    );
+    assert.deepEqual(r.results.map((x) => x.id), ['r2', 'r1']);
+    assert.deepEqual(h.calls.map((c) => c.body.state), ['s2', 's1']);
+  });
+
+  test('order_check re-asks only the checked questions with criteria reversed and remaps the score', async () => {
+    const h = fakeHttp((call, i) => ({
+      ok: true,
+      status: 200,
+      body: {
+        answers: i === 0
+          ? {
+            c: { choice: 'b', confidence: 0.9, probabilities: { a: 0.1, b: 0.9 } },
+            s: { score: 1.6, confidence: 0.7, probabilities: { 0: 0.1, 1: 0.2, 2: 0.7 } },
+            n: { noul: 0.9 },
+          }
+          : {
+            c: { choice: 'b', confidence: 0.8, probabilities: { a: 0.2, b: 0.8 } },
+            s: { score: 0.4, confidence: 0.6, probabilities: { 0: 0.7, 1: 0.2, 2: 0.1 } },
+          },
+      },
+    }));
+    const r = await mod.decide(
+      req({
+        c: { ...MIXED.c, order_check: true },
+        s: { ...MIXED.s, order_check: true },
+        n: MIXED.n,
+      }),
+      { config: jevCfg(), http: h.http, env: ENV },
+    );
+    assert.equal(h.calls.length, 2);
+    assert.deepEqual(Object.keys(h.calls[1].body.questions), ['c', 's']);
+    assert.deepEqual(Object.keys(h.calls[1].body.questions.c.criteria), ['b', 'a']);
+    assert.deepEqual(h.calls[1].body.questions.s.criteria, ['lots', 'some', 'not much']);
+    const a = r.results[0].answers;
+    assert.equal(a.c.status, 'ok');
+    assert.equal(a.c.confidence, 0.8, 'the lower of the two confidences');
+    assert.equal(a.s.status, 'ok');
+    assert.equal(a.s.choice, 'high');
+    assert.equal(a.s.score, 1.6, 'the first-call score, which equals (n-1) - the reversed score');
+    assert.equal(a.s.confidence, 0.6);
+    assert.equal(a.n.status, 'ok');
+  });
+
+  test('order_check abstains order-inconsistent when the reversed answer remaps to a different level', async () => {
+    // The same raw answer both times; under reversal raw level 2 is original level 0.
+    const raw = { score: 1.6, confidence: 0.7, probabilities: { 0: 0.1, 1: 0.2, 2: 0.7 } };
+    const h = fakeHttp(() => ({ ok: true, status: 200, body: { answers: { s: raw } } }));
+    const r = await mod.decide(
+      req({ s: { ...MIXED.s, order_check: true } }),
+      { config: jevCfg(), http: h.http, env: ENV },
+    );
+    assert.deepEqual(r.results[0].answers.s, { status: 'abstain', reason: 'order-inconsistent', confidence: 0.7 });
+  });
+
+  test('a failed POST trips the breaker for the rest of the invocation', async () => {
+    const h = fakeHttp(() => ({ ok: false, status: 0, body: '', timedOut: true }));
+    const r = await mod.decide(
+      { requests: [
+        { id: 'r1', state: 's1', questions: { n: MIXED.n } },
+        { id: 'r2', state: 's2', questions: { n: MIXED.n } },
+      ] },
+      { config: jevCfg(), http: h.http, env: ENV },
+    );
+    assert.equal(h.calls.length, 1);
+    assert.equal(r.results[0].answers.n.reason, 'timeout');
+    assert.equal(r.results[1].answers.n.reason, 'timeout');
+  });
+
+  test('more than 24 criteria abstain too-many-options without a call', async () => {
+    const h = fakeHttp(jevHandler({}));
+    const r = await mod.decide(
+      req({ c: { type: 'choice', instructions: 'Pick.', criteria: criteriaOf(25) } }),
+      { config: jevCfg(), http: h.http, env: ENV },
+    );
+    assert.equal(r.results[0].answers.c.reason, 'too-many-options');
+    assert.equal(h.calls.length, 0);
+  });
+});
+
+describe('circuit breaker and sequencing', () => {
+  const three = () => ({ q1: choiceQ(), q2: choiceQ(), q3: choiceQ() });
+
+  for (const [label, result, reason] of [
+    ['timeout', { ok: false, status: 0, body: '', timedOut: true }, 'timeout'],
+    ['unreachable', { ok: false, status: 0, body: '', timedOut: false }, 'unreachable'],
+    ['model-missing', { ok: false, status: 404, body: '{}' }, 'model-missing'],
+  ]) {
+    test(`a ${label} result stops the invocation after one call`, async () => {
+      const { answers, h } = await ask(three(), { handler: () => result });
+      assert.equal(h.calls.length, 1);
+      for (const k of ['q1', 'q2', 'q3']) {
+        assert.deepEqual(answers[k], { status: 'abstain', reason }, k);
+      }
+    });
+  }
+
+  test('context-exceeded does not trip the breaker', async () => {
+    const { answers, h } = await ask(three(), {
+      handler: () => ({ ok: false, status: 400, body: '{"error":{"type":"exceed_context_size_error"}}' }),
+    });
+    assert.equal(h.calls.length, 3);
+    for (const k of ['q1', 'q2', 'q3']) assert.equal(answers[k].reason, 'context-exceeded');
+  });
+
+  test('backend calls are strictly sequential across a 5-question request', async () => {
+    const questions = {};
+    for (let i = 0; i < 5; i += 1) questions[`q${i}`] = choiceQ();
+    const { h, answers } = await ask(questions);
+    assert.equal(h.calls.length, 5);
+    assert.equal(h.maxInFlight, 1);
+    assert.equal(Object.keys(answers).length, 5);
+  });
+
+  test('the breaker state does not leak between invocations', async () => {
+    const down = fakeHttp(() => ({ ok: false, status: 0, body: '', timedOut: true }));
+    await mod.decide(req({ q: choiceQ() }), { config: cfg(), http: down.http });
+    const up = fakeHttp(pickByKey(() => 'a'));
+    const r = await mod.decide(req({ q: choiceQ() }), { config: cfg(), http: up.http });
+    assert.equal(up.calls.length, 1);
+    assert.equal(r.results[0].answers.q.status, 'ok');
+  });
+});
+
+describe('egress', () => {
+  test('a non-loopback or ambiguous host without allow_remote abstains with zero calls', async () => {
+    for (const base of ['http://192.0.2.1', 'http://0.0.0.0', 'http://[::ffff:127.0.0.1]', 'http://example.com:1234']) {
+      const { answers, h } = await ask({ q: choiceQ() }, { config: cfg({ base_url: base }) });
+      assert.deepEqual(answers.q, { status: 'abstain', reason: 'egress-not-consented' }, base);
+      assert.equal(h.calls.length, 0, base);
+    }
+  });
+
+  test('127.1, 2130706433, localhost and [::1] are loopback and are sent', async () => {
+    for (const base of ['http://127.1:1234', 'http://2130706433:1234', 'http://localhost:1234', 'http://[::1]:1234']) {
+      assert.equal(mod.isLoopbackUrl(base), true, base);
+      const { answers, h } = await ask({ q: choiceQ() }, { config: cfg({ base_url: base }) });
+      assert.equal(answers.q.status, 'ok', base);
+      assert.equal(h.calls.length, 1, base);
+    }
+  });
+
+  test('allow_remote true sends to a remote host', async () => {
+    const { answers, h } = await ask({ q: choiceQ() }, { config: cfg({ base_url: 'http://192.0.2.1:9', allow_remote: true }) });
+    assert.equal(answers.q.status, 'ok');
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0].url, 'http://192.0.2.1:9/v1/chat/completions');
+  });
+
+  test('isLoopbackUrl rejects non-http schemes and garbage', () => {
+    for (const v of ['file:///etc/passwd', 'ftp://127.0.0.1', '127.0.0.1:1234', '', null, 42]) {
+      assert.equal(mod.isLoopbackUrl(v), false, String(v));
+    }
+  });
+});
+
+describe('contract edges', () => {
+  test('a choice with 2 or 24 criteria is answered; 1 is invalid-request; 25 is too-many-options', async () => {
+    const { answers, h } = await ask({
+      two: { type: 'choice', instructions: 'Pick.', criteria: criteriaOf(2) },
+      max: { type: 'choice', instructions: 'Pick.', criteria: criteriaOf(24) },
+      one: { type: 'choice', instructions: 'Pick.', criteria: criteriaOf(1) },
+      over: { type: 'choice', instructions: 'Pick.', criteria: criteriaOf(25) },
+      sone: { type: 'score', instructions: 'Rate.', criteria: criteriaOf(1) },
+      sover: { type: 'score', instructions: 'Rate.', criteria: criteriaOf(25) },
+      stwo: { type: 'score', instructions: 'Rate.', criteria: criteriaOf(2) },
+    }, { handler: pickByKey(() => 'k0') });
+    assert.equal(answers.two.status, 'ok');
+    assert.equal(answers.max.status, 'ok');
+    assert.equal(answers.stwo.status, 'ok');
+    assert.equal(answers.one.reason, 'invalid-request');
+    assert.equal(answers.sone.reason, 'invalid-request');
+    assert.equal(answers.over.reason, 'too-many-options');
+    assert.equal(answers.sover.reason, 'too-many-options');
+    assert.equal(h.calls.length, 3);
+    assert.equal(optionsOf(h.calls[1]).at(-1).label, 'X');
+  });
+
+  test('a criteria key that is reserved or malformed abstains invalid-request for that question only', async () => {
+    const bad = JSON.parse('{"type":"choice","instructions":"Pick.","criteria":{"__proto__":"x","ok":"y"}}');
+    const { answers } = await ask({
+      reserved: bad,
+      ctor: { type: 'choice', instructions: 'Pick.', criteria: { constructor: 'x', fine: 'y' } },
+      spaced: { type: 'choice', instructions: 'Pick.', criteria: { 'a b': 'x', fine: 'y' } },
+      good: choiceQ(['a', 'b']),
+    });
+    assert.equal(answers.reserved.reason, 'invalid-request');
+    assert.equal(answers.ctor.reason, 'invalid-request');
+    assert.equal(answers.spaced.reason, 'invalid-request');
+    assert.equal(answers.good.status, 'ok');
+  });
+
+  test('structural faults throw the TypeError', async () => {
+    const proto = JSON.parse('{"state":"s","questions":{"__proto__":{"type":"noul","instructions":"x"}}}');
+    const cases = [
+      ['null', null],
+      ['array', []],
+      ['neither', { state: 's' }],
+      ['both', { state: 's', questions: { q: choiceQ() }, requests: [] }],
+      ['empty questions', { state: 's', questions: {} }],
+      ['empty requests', { requests: [] }],
+      ['missing state', { questions: { q: choiceQ() } }],
+      ['numeric state', { state: 3, questions: { q: choiceQ() } }],
+      ['proto question key', proto],
+      ['bad question key', { state: 's', questions: { 'a b': choiceQ() } }],
+      ['duplicate ids', { requests: [
+        { id: 'x', state: 's', questions: { q: choiceQ() } },
+        { id: 'x', state: 's', questions: { q: choiceQ() } },
+      ] }],
+      ['reserved id', { requests: [{ id: 'constructor', state: 's', questions: { q: choiceQ() } }] }],
+      ['default id in batch', { requests: [{ id: 'default', state: 's', questions: { q: choiceQ() } }] }],
+      ['bad id', { requests: [{ id: 'a/b', state: 's', questions: { q: choiceQ() } }] }],
+    ];
+    for (const [label, request] of cases) {
+      await assert.rejects(
+        () => mod.decide(request, { config: cfg(), http: fakeHttp(pickByKey(() => 'a')).http }),
+        (e) => e instanceof TypeError && e.message.startsWith('decision-model: invalid request:'),
+        label,
+      );
+    }
+  });
+
+  test('more than 256 questions in total is a structural fault', () => {
+    const questions = {};
+    for (let i = 0; i < 257; i += 1) questions[`q${i}`] = choiceQ();
+    assert.equal(mod.validateRequest(req(questions)).ok, false);
+  });
+
+  test('an empty-string state is accepted and sent unchanged', async () => {
+    const { h } = await ask({ q: choiceQ() }, { state: '' });
+    assert.equal(h.calls.length, 1);
+    const sent = JSON.parse(h.calls[0].body.messages[1].content);
+    assert.equal(sent.state, '');
+  });
+
+  test('state is sent as JSON text and is never trimmed', async () => {
+    const state = '  padded \n state with "quotes" and ünïcode  ';
+    const { h } = await ask({ q: choiceQ() }, { state });
+    assert.equal(JSON.parse(h.calls[0].body.messages[1].content).state, state);
+    assert.equal(h.calls[0].body.messages[0].content, mod.SYSTEM_PROMPT);
+    assert.ok(!h.calls[0].body.messages[0].content.includes('padded'));
+  });
+
+  test('results come back in request order and the single form is id default', async () => {
+    const h = fakeHttp(pickByKey(() => 'a'));
+    const r = await mod.decide(
+      { requests: [
+        { id: 'b', state: 's', questions: { z: choiceQ(), y: choiceQ() } },
+        { id: 'a', state: 's', questions: { q: choiceQ() } },
+      ] },
+      { config: cfg(), http: h.http },
+    );
+    assert.deepEqual(r.results.map((x) => x.id), ['b', 'a']);
+    assert.deepEqual(Object.keys(r.results[0].answers), ['z', 'y']);
+    const single = await mod.decide(req({ q: choiceQ() }), { config: cfg(), http: fakeHttp(pickByKey(() => 'a')).http });
+    assert.equal(single.results[0].id, 'default');
+  });
+
+  test('a probability tie keeps the letter the model emitted', async () => {
+    const { answers } = await ask({ q: choiceQ(['a', 'b']) }, {
+      config: cfg({ min_confidence: 0.4 }),
+      handler: () => ({
+        ok: true,
+        status: 200,
+        body: completion('B', [{ token: 'A', logprob: -0.5 }, { token: 'B', logprob: -0.5 }]),
+      }),
+    });
+    assert.equal(answers.q.choice, 'b');
+    assert.equal(answers.q.confidence, 0.5);
+  });
+
+  test('whitespace-padded top_logprobs tokens match their letter', async () => {
+    const { answers } = await ask({ q: choiceQ(['a', 'b']) }, {
+      handler: () => ({
+        ok: true,
+        status: 200,
+        body: completion('A', [{ token: ' A', logprob: -0.01 }, { token: '\nB', logprob: -6 }]),
+      }),
+    });
+    assert.equal(answers.q.status, 'ok');
+    assert.equal(answers.q.probabilities.b > 0, true);
+  });
+
+  test('empty content, finish_reason length, and empty or absent top_logprobs are invalid-output', async () => {
+    const top = [{ token: 'A', logprob: -0.01 }, { token: 'B', logprob: -5 }];
+    const bodies = [
+      completion('', top),
+      completion('A', top, { finish_reason: 'length' }),
+      completion('A', []),
+      { choices: [{ message: { content: 'A' }, finish_reason: 'stop' }] },
+      completion('Z', top),
+      { choices: [] },
+      '<<not json>>',
+    ];
+    for (const body of bodies) {
+      const { answers } = await ask({ q: choiceQ(['a', 'b']) }, { handler: () => ({ ok: true, status: 200, body }) });
+      assert.deepEqual(answers.q, { status: 'abstain', reason: 'invalid-output' }, JSON.stringify(body).slice(0, 60));
+    }
+  });
+
+  test('HTTP failures classify: 500 context overflow, 404 model, other non-2xx unreachable', async () => {
+    const cases = [
+      [{ ok: false, status: 500, body: '{"error":{"type":"exceed_context_size_error"}}' }, 'context-exceeded'],
+      [{ ok: false, status: 400, body: 'This model\'s maximum context length is 4096 tokens' }, 'context-exceeded'],
+      [{ ok: false, status: 404, body: '{}' }, 'model-missing'],
+      [{ ok: false, status: 400, body: '{"error":{"code":"model_not_found"}}' }, 'model-missing'],
+      [{ ok: false, status: 503, body: 'busy' }, 'unreachable'],
+    ];
+    for (const [result, reason] of cases) {
+      const { answers } = await ask({ q: choiceQ() }, { handler: () => result });
+      assert.equal(answers.q.reason, reason, JSON.stringify(result));
+    }
+  });
+
+  test('an empty or whitespace-only model abstains model-missing with zero calls', async () => {
+    for (const model of ['', '   ']) {
+      const { answers, h } = await ask({ q: choiceQ() }, { config: cfg({ model }) });
+      assert.deepEqual(answers.q, { status: 'abstain', reason: 'model-missing' });
+      assert.equal(h.calls.length, 0);
+    }
+  });
+
+  test('a config min_confidence outside [0, 1] abstains invalid-config with zero calls', async () => {
+    for (const v of [1.5, -0.1, 'high']) {
+      const { answers, h } = await ask({ q: choiceQ() }, { config: cfg({ min_confidence: v }) });
+      assert.deepEqual(answers.q, { status: 'abstain', reason: 'invalid-config' }, String(v));
+      assert.equal(h.calls.length, 0);
+    }
+  });
+
+  test('a rounded confidence equal to the floor is ok; one 0.0001 below abstains', async () => {
+    const atFloor = await ask({ q: choiceQ(['a', 'b']) }, { handler: twoWay('A', 0.9) });
+    assert.equal(atFloor.answers.q.status, 'ok');
+    assert.equal(atFloor.answers.q.confidence, 0.9);
+    const below = await ask({ q: choiceQ(['a', 'b']) }, { handler: twoWay('A', 0.8999) });
+    assert.equal(below.answers.q.reason, 'low-confidence');
+    assert.equal(below.answers.q.confidence, 0.8999);
+  });
+
+  test('capability-off wins over every other fault and sends nothing', async () => {
+    const { answers, h } = await ask(
+      { q: choiceQ(), bad: { type: 'choice' } },
+      { config: { enabled: false, model: '', base_url: 'nope', min_confidence: 9 } },
+    );
+    assert.deepEqual(answers.q, { status: 'abstain', reason: 'capability-off' });
+    assert.deepEqual(answers.bad, { status: 'abstain', reason: 'capability-off' });
+    assert.equal(h.calls.length, 0);
+  });
+
+  test('a score question reports the probability-weighted level index', async () => {
+    const { answers } = await ask({
+      s: { type: 'score', instructions: 'Rate.', criteria: { low: 'l', mid: 'm', high: 'h' } },
+    }, {
+      config: cfg({ min_confidence: 0.3 }),
+      handler: () => ({
+        ok: true,
+        status: 200,
+        body: completion('C', [
+          { token: 'C', logprob: Math.log(0.5) },
+          { token: 'B', logprob: Math.log(0.3) },
+          { token: 'A', logprob: Math.log(0.2) },
+        ]),
+      }),
+    });
+    assert.equal(answers.s.choice, 'high');
+    assert.equal(answers.s.score, 1.3);
+  });
+});
+
+describe('properties', () => {
+  test('letterProbabilities: every p in [0,1], present labels sum to 1, absent labels are 0', () => {
+    const arb = fc.integer({ min: 2, max: 24 }).chain((n) => fc.array(
+      fc.option(fc.double({ min: -30, max: 0, noNaN: true }), { nil: null }),
+      { minLength: n, maxLength: n },
+    ).map((lps) => ({ n, lps })));
+    fc.assert(fc.property(arb, ({ n, lps }) => {
+      const labels = LETTERS.slice(0, n).split('');
+      const top = [];
+      lps.forEach((lp, i) => { if (lp !== null) top.push({ token: labels[i], logprob: lp }); });
+      const p = mod.letterProbabilities(top, labels);
+      assert.equal(Object.keys(p).length, n);
+      let sum = 0;
+      lps.forEach((lp, i) => {
+        const v = p[labels[i]];
+        assert.ok(v >= 0 && v <= 1, `p ${v}`);
+        if (lp === null) assert.equal(v, 0); else sum += v;
+      });
+      if (top.length > 0) assert.ok(Math.abs(sum - 1) < 1e-9, `sum ${sum}`);
+    }));
+  });
+
+  test('openai-letter score lies in [0, n-1]', async () => {
+    const arb = fc.integer({ min: 2, max: 24 }).chain((n) => fc.array(
+      fc.double({ min: -30, max: 0, noNaN: true }),
+      { minLength: n, maxLength: n },
+    ).map((lps) => ({ n, lps })));
+    await fc.assert(fc.asyncProperty(arb, async ({ n, lps }) => {
+      let best = 0;
+      lps.forEach((lp, i) => { if (lp > lps[best]) best = i; });
+      const h = fakeHttp(() => ({
+        ok: true,
+        status: 200,
+        body: completion(LETTERS[best], lps.map((lp, i) => ({ token: LETTERS[i], logprob: lp }))),
+      }));
+      const r = await mod.decide(
+        req({ s: { type: 'score', instructions: 'Rate.', criteria: criteriaOf(n) } }),
+        { config: cfg({ min_confidence: 0 }), http: h.http },
+      );
+      const a = r.results[0].answers.s;
+      assert.equal(a.status, 'ok');
+      assert.ok(a.score >= 0 && a.score <= n - 1, `score ${a.score} for n=${n}`);
+    }));
+  });
+
+  test('letter assignment is a bijection in forward and reversed presentation', async () => {
+    await fc.assert(fc.asyncProperty(fc.integer({ min: 2, max: 24 }), async (n) => {
+      const keys = Object.keys(criteriaOf(n));
+      const h = fakeHttp(pickByKey(() => 'k0'));
+      await mod.decide(
+        req({ q: { type: 'choice', instructions: 'Pick.', criteria: criteriaOf(n), order_check: true } }),
+        { config: cfg(), http: h.http },
+      );
+      assert.equal(h.calls.length, 2);
+      const labels = LETTERS.slice(0, n).split('');
+      const forward = optionsOf(h.calls[0]);
+      const reversed = optionsOf(h.calls[1]);
+      assert.deepEqual(forward.map((o) => o.label), labels);
+      assert.deepEqual(reversed.map((o) => o.label), labels);
+      assert.deepEqual(forward.map((o) => o.key), keys);
+      assert.deepEqual(reversed.map((o) => o.key), [...keys].reverse());
+      assert.equal(new Set(reversed.map((o) => o.key)).size, n);
+    }));
+  });
+});

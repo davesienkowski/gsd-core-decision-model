@@ -12,6 +12,9 @@
  *
  *   decide --request <path|->   answer the questions in a JSON request file
  *                                (a path inside the project root, or `-` for stdin)
+ *   decide --status [--probe]   report whether the capability is active and how it is
+ *                                configured; --probe adds one GET to the models URL
+ *                                (no network call without it). --probe needs --status.
  *
  * `routeHubCommandFamily` is not used: it reads args[1] as a subcommand, and
  * `decide` has none. The flags are parsed with `parseNamedArgsOrExit`.
@@ -62,13 +65,30 @@ function routeDecideCommand({ args, cwd, raw, error, _engine, _readStdin, _core 
 
   const data = parseNamedArgsOrExit(
     args.slice(1),
-    { valueFlags: ['request'], booleanFlags: [], positionals: 0 },
+    { valueFlags: ['request'], booleanFlags: ['status', 'probe'], positionals: 0 },
     (message) => usage(message),
   );
 
   const requestArg = data['request'];
+  const wantsStatus = data['status'] === true;
+  const wantsProbe = data['probe'] === true;
+
+  if (wantsProbe && !wantsStatus) {
+    usage('decide --probe is only valid with --status');
+    return undefined;
+  }
+  if (wantsStatus && requestArg !== null && requestArg !== undefined) {
+    usage('decide takes either --request <path|-> or --status, not both');
+    return undefined;
+  }
+  if (wantsStatus) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const statusEngine: EngineModule = _engine ?? (require('./decision-model.cjs') as EngineModule);
+    c.output(statusEngine.statusSync({ cwd, probe: wantsProbe }), raw);
+    return undefined;
+  }
   if (typeof requestArg !== 'string') {
-    usage('decide requires --request <path|->');
+    usage('decide requires --request <path|-> or --status');
     return undefined;
   }
 
