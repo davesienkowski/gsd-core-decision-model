@@ -21,7 +21,8 @@
  *    questions block answers `ok` through the documented recipe, hostile state text and odd file names arrive as data,
  *    and integer criteria keys abstain invalid-request.
  *
- * SITES grows one row per site as the later tasks and chunk C4 land; the rows here are the tracer pair.
+ * SITES holds one row per site block: the workflow sites of chunk C3 and the agent sites of chunk C4 (quick 261001-x04),
+ * whose reference sections are `### ` sections under `## Agent sites`; `.compact.md` twins carry `twinOf` (D13).
  */
 'use strict';
 
@@ -49,8 +50,11 @@ const OPEN_PREFIX = '<!-- decision-model: ';
 const CLOSE_MARKER = '<!-- /decision-model -->';
 const LABEL = '**Decision model (optional):**';
 const AGENT_SITES_HEADING = '## Agent sites';
-// The shared part's own test budget (D24 allows raising it); chunk C4 caps `## Agent sites` itself.
+// This feature's own test budgets for its reference (D24: "the shared reference test cap may be raised"; these are
+// not repo budgets). The shared part, the `## Agent sites` part chunk C4 appends, and the whole file.
 const REFERENCE_CAP_BYTES = 24576;
+const AGENT_SITES_CAP_BYTES = 16384;
+const REFERENCE_FILE_CAP_BYTES = 40960;
 const SHARED_HEADINGS = [
   '## Block convention', '## Activation', '## Request shape', '## Limits',
   '## Sending', '## Reading answers', '## Provenance', '## Hard limits',
@@ -207,6 +211,117 @@ const SITES = [
     ],
     must: ['confirm_with.elements'],
   },
+  // Chunk C4 agent and agent-adjacent sites (quick 261001-x04). `refSection` names the `### ` section under
+  // `## Agent sites` that documents the site; `twinOf` marks a `.compact.md` twin (D13).
+  {
+    file: 'agents/gsd-verifier.md',
+    id: 'grep-rank',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 450,
+    keep: [
+      '**Stub classification:** A grep match is a STUB only when the value flows to rendering or user-visible output AND no other code path populates it with real data.',
+      '**Debt marker gate:** Any `TBD`, `FIXME`, or `XXX` marker in a file modified by this phase is a 🛑 BLOCKER',
+    ],
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank'],
+  },
+  {
+    file: 'agents/gsd-executor.md',
+    id: 'grep-rank',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 520,
+    keep: [
+      'If any stubs exist, add a `## Known Stubs` section to the SUMMARY listing each stub with its file, line, and reason.',
+      '- Placeholder text: "not available", "coming soon", "placeholder", "TODO", "FIXME"',
+    ],
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank'],
+  },
+  {
+    file: 'agents/gsd-code-reviewer.md',
+    id: 'grep-rank',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 420,
+    keep: ['Record findings with severity: secrets/dangerous=Critical, debug=Info, empty catch=Warning'],
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank'],
+  },
+  {
+    file: 'agents/gsd-code-reviewer.compact.md',
+    id: 'grep-rank',
+    twinOf: 'agents/gsd-code-reviewer.md',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 320,
+    keep: ['Severity: secrets/dangerous=Critical, debug=Info, empty catch=Warning.'],
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank'],
+  },
+  {
+    file: 'agents/gsd-ui-auditor.md',
+    id: 'grep-rank',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 380,
+    keep: ['**If no UI-SPEC:** Flag generic patterns against UX best practices.'],
+    must: ['Judge every hit', 'grep order', 'Grep-hit pre-rank', 'gsd-run-resolver.md'],
+  },
+  {
+    file: 'agents/gsd-ui-auditor.compact.md',
+    id: 'grep-rank',
+    twinOf: 'agents/gsd-ui-auditor.md',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 360,
+    keep: ['Else: flag generic patterns against UX best practices.'],
+    must: ['judge every hit', 'Grep-hit pre-rank', 'gsd-run-resolver.md'],
+  },
+  {
+    file: 'agents/gsd-roadmapper.md',
+    id: 'criterion-flag',
+    refSection: 'Criterion flag',
+    maxBytes: 500,
+    keep: ['**Test:** Each truth should be verifiable by a human using the application.', '4. Flag any gaps'],
+    must: ['wording stays', 'Criterion flag', 'gsd-run-resolver.md'],
+  },
+  {
+    file: 'agents/gsd-roadmapper.compact.md',
+    id: 'criterion-flag',
+    twinOf: 'agents/gsd-roadmapper.md',
+    refSection: 'Criterion flag',
+    maxBytes: 420,
+    keep: ['**Test:** each truth verifiable by a human using the application.', '4. Flag gaps'],
+    must: ['wording stays', 'Criterion flag', 'gsd-run-resolver.md'],
+  },
+  {
+    file: 'agents/gsd-doc-verifier.md',
+    id: 'doc-claim-flag',
+    refSection: 'Doc-claim flag',
+    maxBytes: 560,
+    keep: ['Build a list of `{ line, category, claim }` tuples.', '- `claims_checked`: total claims attempted (excludes skipped claims)'],
+    must: ['never skips a claim', 'PASS/FAIL', 'advisory', 'Doc-claim flag'],
+  },
+  {
+    file: 'agents/gsd-doc-verifier.compact.md',
+    id: 'doc-claim-flag',
+    twinOf: 'agents/gsd-doc-verifier.md',
+    refSection: 'Doc-claim flag',
+    maxBytes: 440,
+    keep: ['Extract all claims per applicable category into `{ line, category, claim }` tuples.'],
+    must: ['never skips a claim', 'PASS/FAIL', 'advisory', 'Doc-claim flag'],
+  },
+  {
+    file: 'agents/gsd-debugger.md',
+    id: 'kb-recall',
+    refSection: 'KB recall',
+    maxBytes: 600,
+    keep: [
+      'fall back to reading `.planning/debug/knowledge-base.md` and keyword overlap when MemPalace is absent',
+      '  - Note in Current Focus: `known_pattern_candidate: "{matched slug} — {description}"`',
+    ],
+    must: ['hypotheses', 'keyword matches stay', 'tested first', 'KB recall'],
+  },
+  {
+    file: 'gsd-core/workflows/profile-user.md',
+    id: 'profile-prelabel',
+    refSection: 'Profile pre-label',
+    maxBytes: 820,
+    keep: ['Display: "✓ Sampled N messages from M projects"', 'Display: "◆ Analyzing patterns..."'],
+    must: ['profile-labels.json', 'Profile pre-label', 'decided-by:', 'carry on without it'],
+  },
 ];
 
 function read(rel) {
@@ -222,6 +337,13 @@ function sharedPart(text) {
   const lines = text.split('\n');
   const at = lines.indexOf(AGENT_SITES_HEADING);
   return at === -1 ? text : lines.slice(0, at).join('\n');
+}
+
+/** The reference text from the `## Agent sites` line to the end (empty when the section is missing). */
+function agentSitesPart(text) {
+  const lines = text.split('\n');
+  const at = lines.indexOf(AGENT_SITES_HEADING);
+  return at === -1 ? '' : lines.slice(at).join('\n');
 }
 
 /** Every block in `text` whose open marker is `<!-- decision-model: {id} -->`, with its extent and ordering facts. */
@@ -413,8 +535,14 @@ describe('decision-model prose blocks', () => {
       });
 
       test('the reference has the site section', () => {
-        const lines = readReference().split('\n');
-        assert.ok(lines.includes(`## site: ${site.id}`), `reference needs "## site: ${site.id}"`);
+        const text = readReference();
+        if (site.refSection === undefined) {
+          assert.ok(text.split('\n').includes(`## site: ${site.id}`), `reference needs "## site: ${site.id}"`);
+          return;
+        }
+        // An agent site is a `### ` section under `## Agent sites` that names its site id.
+        assert.ok(agentSitesPart(text).split('\n').includes(`### ${site.refSection}`), `## Agent sites needs "### ${site.refSection}"`);
+        assert.ok(subsection(text, site.refSection).includes(`Site \`${site.id}\``), `### ${site.refSection} must name Site \`${site.id}\``);
       });
 
       if (site.questions ?? true) {
@@ -433,6 +561,33 @@ describe('decision-model-calls.md reference', () => {
     assert.ok(Buffer.byteLength(part, 'utf8') <= REFERENCE_CAP_BYTES, `shared part is ${Buffer.byteLength(part, 'utf8')} bytes`);
     assert.ok(!part.includes('curl'), 'prose must not call an endpoint with curl');
     assert.ok(!part.includes('/v1/chat'), 'prose must not name the chat endpoint');
+  });
+
+  test('keeps its Agent sites part and the whole file within this feature\'s own caps', () => {
+    const text = readReference();
+    const agent = agentSitesPart(text);
+    assert.ok(agent.length > 0, 'the reference has an ## Agent sites part');
+    assert.ok(Buffer.byteLength(agent, 'utf8') <= AGENT_SITES_CAP_BYTES, `Agent sites part is ${Buffer.byteLength(agent, 'utf8')} bytes, cap ${AGENT_SITES_CAP_BYTES}`);
+    assert.ok(!agent.includes('curl') && !agent.includes('/v1/chat'), 'agent sites never call an endpoint directly');
+    assert.ok(Buffer.byteLength(text, 'utf8') <= REFERENCE_FILE_CAP_BYTES, `reference is ${Buffer.byteLength(text, 'utf8')} bytes, cap ${REFERENCE_FILE_CAP_BYTES}`);
+  });
+
+  test('D13: every compact twin carries its full agent\'s site, no larger, and the tools line host rule holds (D26)', () => {
+    for (const site of SITES.filter((s) => s.twinOf !== undefined)) {
+      const twin = extractBlocks(read(site.file), site.id);
+      const full = extractBlocks(read(site.twinOf), site.id);
+      assert.equal(twin.length, 1, `${site.file} [${site.id}]`);
+      assert.equal(full.length, 1, `${site.twinOf} [${site.id}]`);
+      const fullRow = SITES.find((s) => s.file === site.twinOf && s.id === site.id);
+      assert.ok(fullRow, `${site.twinOf} [${site.id}] has its own SITES row`);
+      assert.ok(Buffer.byteLength(twin[0].text, 'utf8') <= Buffer.byteLength(full[0].text, 'utf8'), `${site.file} block is larger than its full agent's`);
+    }
+    for (const site of SITES.filter((s) => s.file.startsWith('agents/'))) {
+      const tools = /^tools: (.*)$/m.exec(read(site.file));
+      assert.ok(tools, `${site.file} has a tools line`);
+      const granted = tools[1].split(',').map((x) => x.trim());
+      assert.ok(granted.includes('Write') && granted.includes('Bash'), `${site.file} hosts a block but lacks Write or Bash (D26)`);
+    }
   });
 
   test('has every shared heading and the literals the sites rely on', () => {
