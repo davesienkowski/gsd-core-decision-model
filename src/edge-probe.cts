@@ -20,7 +20,9 @@
  * The pure functions above stay dependency-free and deterministic. Only the PROPOSAL pass of the
  * CLI (no resolutions file) consults the optional decision-model capability (quick 261001-wzs,
  * D11 site #1): for a requirement whose prose matched no shape cue and that has no authored
- * `shapes` override, ONE batched call asks the model which shapes apply. A status-ok `yes` answer
+ * `shapes` override, the model is asked which shapes apply: one call per requirement, in input
+ * order, all inside a 60 s wall budget (CR-01), so the CLI always returns its report in time; a
+ * requirement left unasked keeps its plain row and one stderr line says so. A status-ok `yes` answer
  * becomes a `model_proposal` annotation on that requirement's existing `unclassified` row, with a
  * `decided-by` line per label and a `confirm_with: { shapes }` override the author can paste to
  * make the rows deterministic. No row is added, removed or re-statused, so item keys, coverage
@@ -44,6 +46,8 @@ import {
   type DecisionBatchRequest,
   type DecisionQuestion,
   MAX_BATCH_QUESTIONS,
+  decideWithinBudget,
+  noteSkippedItems,
   answersFor,
   answerOf,
   okYes,
@@ -318,12 +322,15 @@ export interface AnnotatedCoverageReport {
 export interface ShapePlan {
   request: DecisionBatchRequest;
   targets: Array<{ id: string; requirement_id: string }>;
+  /** Every zero-hit item, including any past the cap (IN-04), so a skip can be reported. */
+  fallthrough: number;
 }
 
 const SHAPE_KEYS = Object.keys(SHAPE_CUES) as Shape[];
 
 /**
- * Plan the one batched request for requirements the regex could not label. Pure. A requirement is
+ * Plan the batched request for requirements the regex could not label (sent one request per
+ * call by the proposal pass). Pure. A requirement is
  * asked only when it has no authored `shapes` array (including the `[]` opt-out) and
  * `classifyShape(text_en ?? text)` is empty. The request state is that exact subject, verbatim.
  * Returns null when nothing falls through.
@@ -335,16 +342,18 @@ export function planShapeDecisions(requirements: Requirement[]): ShapePlan | nul
   const maxTargets = Math.floor(MAX_BATCH_QUESTIONS / SHAPE_KEYS.length);
   const targets: ShapePlan['targets'] = [];
   const requests: DecisionBatchRequest['requests'] = [];
+  let fallthrough = 0;
   for (const req of requirements) {
-    if (targets.length >= maxTargets) break;
     if (req == null || Array.isArray(req.shapes)) continue;
     const subject = req.text_en ?? req.text;
     if (typeof subject !== 'string' || classifyShape(subject).length > 0) continue;
+    fallthrough += 1;
+    if (targets.length >= maxTargets) continue;
     const id = `r${targets.length}`;
     targets.push({ id, requirement_id: req.id });
     requests.push({ id, state: subject, questions: { ...questions } });
   }
-  return targets.length === 0 ? null : { request: { requests }, targets };
+  return targets.length === 0 ? null : { request: { requests }, targets, fallthrough };
 }
 
 /**
@@ -387,8 +396,10 @@ export function applyShapeDecisions(
 
 /**
  * The proposal pass: today's `analyzeCoverage(requirements, [])` FIRST (so validation still
- * throws exactly as before), then at most one decide call for the requirements that fell through.
- * With nothing to ask, no capability or a null decide, the deterministic report is returned as is.
+ * throws exactly as before), then one decide call per requirement that fell through, inside the
+ * site wall budget (`decideWithinBudget`). With nothing to ask, no capability or a null decide,
+ * the deterministic report is returned as is. When the budget or the item cap left zero-hit
+ * requirements unasked, one stderr line reports how many got a proposal.
  */
 export function proposeCoverageWithDecisionModel(
   requirements: Requirement[],
@@ -399,7 +410,12 @@ export function proposeCoverageWithDecisionModel(
   if (plan === null) return base;
   const decide: DecideFn | null = resolveSiteDecide(opts);
   if (decide === null) return base;
-  return applyShapeDecisions(base, plan, decide(plan.request));
+  const run = decideWithinBudget(decide, plan.request);
+  const report = applyShapeDecisions(base, plan, run.response);
+  if (run.outOfTime || plan.fallthrough > plan.targets.length) {
+    noteSkippedItems(report.items.filter((i) => i.model_proposal !== undefined).length, plan.fallthrough);
+  }
+  return report;
 }
 
 /**

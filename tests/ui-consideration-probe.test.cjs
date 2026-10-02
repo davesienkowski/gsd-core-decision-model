@@ -563,13 +563,13 @@ describe('ui-consideration-probe: decision-model fallthrough (261001-o30 D11 sit
     assert.equal(calls[0].requests[0].state, zero.text_en);
   });
 
-  test('three zero-hit elements make one call with ids r0..r2; labels and categories follow vocabulary order', () => {
+  test('three zero-hit elements make one call each, ids r0..r2; labels and categories follow vocabulary order', () => {
     const els = ['uno dos', 'tres cuatro', 'cinco seis'].map((text, i) => ({ id: `Z${i}`, text }));
     const { decide, calls } = fakeDecide(yesFor('media', 'form', 'nav'));
     const report = uc.proposeCoverageWithDecisionModel(els, { decide });
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].requests.map((r) => r.id), ['r0', 'r1', 'r2']);
-    assert.deepEqual(calls[0].requests.map((r) => r.state), ['uno dos', 'tres cuatro', 'cinco seis']);
+    assert.equal(calls.length, 3, 'one call per item keeps each item\'s questions together inside the wall budget');
+    assert.deepEqual(calls.map((c) => c.requests.map((r) => r.id)), [['r0'], ['r1'], ['r2']]);
+    assert.deepEqual(calls.map((c) => c.requests[0].state), ['uno dos', 'tres cuatro', 'cinco seis']);
     assert.deepEqual(report.items.map((i) => i.requirement_id), ['Z0', 'Z1', 'Z2']);
     for (const item of report.items) {
       assert.deepEqual(item.model_proposal.labels.map((l) => l.label), ['form', 'nav', 'media']);
@@ -590,6 +590,24 @@ describe('ui-consideration-probe: decision-model fallthrough (261001-o30 D11 sit
     const plan = uc.planKindDecisions(els);
     assert.ok(plan.request.requests.length * KINDS.length <= 256);
     assert.equal(validateRequest(plan.request).ok, true);
+  });
+
+  test('IN-04: zero-hit items past the item cap are reported on stderr, never dropped silently', () => {
+    const items = Array.from({ length: 80 }, (_, i) => ({ id: `Q${i}`, text: `zzz ${i}` }));
+    const { decide, calls } = fakeDecide(yesFor('media'));
+    const writes = [];
+    const orig = process.stderr.write;
+    process.stderr.write = (chunk) => { writes.push(String(chunk)); return true; };
+    let report;
+    try { report = uc.proposeCoverageWithDecisionModel(items, { decide }); } finally { process.stderr.write = orig; }
+    const cap = Math.floor(256 / KINDS.length);
+    assert.equal(calls.length, cap);
+    assert.equal(report.items.filter((i) => i.model_proposal).length, cap);
+    assert.deepEqual(writes, [`decision-model: proposed ${cap} of 80 zero-hit items within the time budget\n`]);
+    const quiet = [];
+    process.stderr.write = (chunk) => { quiet.push(String(chunk)); return true; };
+    try { uc.proposeCoverageWithDecisionModel(items.slice(0, 3), { decide }); } finally { process.stderr.write = orig; }
+    assert.deepEqual(quiet, [], 'nothing is printed when every zero-hit item was asked');
   });
 
   test('makeCliAnalyzer consults the model only on the proposal pass, never on the merge pass', () => {
@@ -709,6 +727,52 @@ describe('ui-consideration-probe: decision-model fallthrough (261001-o30 D11 sit
       assert.deepEqual(JSON.parse(without.stdout), uc.analyzeCoverage([E1, E2], []));
     } finally {
       server.close();
+      for (const d of dirs) cleanup(d);
+    }
+  });
+  test('subprocess: a slow backend is cut off at the wall budget and the full coverage report still prints', async () => {
+    const { execFile } = require('node:child_process');
+    const { startLetterStub } = require('./helpers/decision-model-stub.cjs');
+    // The test-mode budget override (GSD_TEST_MODE only, may only lower the 60 s budget) keeps this
+    // fast. The engine's own per-call timeout is far above it, so only the site budget can stop it.
+    const BUDGET_MS = 10000;
+    // The CLI is KILLED at budget + margin (node start-up, config read, one engine child), so a
+    // run that outlives the budget fails on the kill, not on a wall-clock assertion. Without the
+    // budget the hanging backend holds it for the engine's 30 s per-call timeout.
+    const KILL_BOUND_MS = BUDGET_MS + 10000;
+    const els = ['uno dos', 'tres cuatro', 'cinco seis'].map((text, i) => ({ id: `Z${i}`, text }));
+    // The first element's six questions are answered yes at once; from then on the backend hangs.
+    const stub = await startLetterStub((_user, hit) => (hit <= KINDS.length ? 'yes' : null));
+    const dirs = [];
+    const mk = (decisionModel) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uc-slow-'));
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uc-slow-home-'));
+      dirs.push(dir, home);
+      fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ decision_model: decisionModel }));
+      fs.writeFileSync(path.join(dir, 'els.json'), JSON.stringify(els));
+      return { dir, home };
+    };
+    const run = ({ dir, home }) => new Promise((resolve) => {
+      execFile(process.execPath, [BUILT_SCRIPT, path.join(dir, 'els.json')], {
+        cwd: dir, timeout: KILL_BOUND_MS, killSignal: 'SIGKILL', encoding: 'utf8',
+        env: { ...process.env, HOME: home, USERPROFILE: home, GSD_HOME: home, GSD_TEST_MODE: '1', GSD_DECISION_MODEL_SITE_BUDGET_MS: String(BUDGET_MS) },
+      }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, signal: err ? err.signal : null, stdout, stderr }));
+    });
+    try {
+      const on = await run(mk({ enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 30000 }));
+      const off = await run(mk({ enabled: false }));
+      assert.equal(on.signal, null, `the CLI was killed at the ${KILL_BOUND_MS} ms bound; the budget is ${BUDGET_MS} ms`);
+      assert.equal(on.code, 0, on.stderr);
+      const report = JSON.parse(on.stdout);
+      const strip = (r) => ({ ...r, items: r.items.map(({ model_proposal: _mp, ...rest }) => rest) });
+      assert.deepEqual(strip(report), JSON.parse(off.stdout), 'every row and the coverage counts are the deterministic report');
+      assert.deepEqual(report.items.filter((i) => i.model_proposal).map((i) => i.requirement_id), ['Z0']);
+      assert.ok(stub.hits >= KINDS.length, `hits ${stub.hits}`);
+      assert.match(on.stderr, /^decision-model: proposed 1 of 3 zero-hit items within the time budget$/m);
+      assert.equal(off.stderr, '');
+    } finally {
+      await stub.close();
       for (const d of dirs) cleanup(d);
     }
   });

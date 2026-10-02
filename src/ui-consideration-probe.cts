@@ -23,7 +23,9 @@
  * The pure functions stay dependency-free and deterministic. Only the PROPOSAL pass of the CLI
  * (no resolutions file) consults the optional decision-model capability (quick 261001-wzs, D11
  * site #1): for an element whose prose matched no kind cue and that has no authored `elements`
- * override, ONE batched call asks the model which kinds apply. A status-ok `yes` answer becomes a
+ * override, the model is asked which kinds apply: one call per element, in input order, all inside
+ * a 60 s wall budget (CR-01); an element left unasked keeps its plain row and one stderr line says
+ * so. A status-ok `yes` answer becomes a
  * `model_proposal` annotation on that element's existing `unclassified` row, with a `decided-by`
  * line per label and a `confirm_with: { elements }` override the author can paste to make the rows
  * deterministic. No row is added, removed or re-statused, so item keys, coverage counts and the
@@ -47,6 +49,8 @@ import {
   type DecisionBatchRequest,
   type DecisionQuestion,
   MAX_BATCH_QUESTIONS,
+  decideWithinBudget,
+  noteSkippedItems,
   answersFor,
   answerOf,
   okYes,
@@ -394,12 +398,15 @@ export interface AnnotatedCoverageReport {
 export interface KindPlan {
   request: DecisionBatchRequest;
   targets: Array<{ id: string; requirement_id: string }>;
+  /** Every zero-hit item, including any past the cap (IN-04), so a skip can be reported. */
+  fallthrough: number;
 }
 
 const KIND_KEYS = Object.keys(UI_CUES) as UIElementKind[];
 
 /**
- * Plan the one batched request for elements the regex could not label. Pure. An element is asked
+ * Plan the batched request for elements the regex could not label (sent one request per call by
+ * the proposal pass). Pure. An element is asked
  * only when it has no authored `elements` array (including the `[]` opt-out) and
  * `classifyElement(text_en ?? text)` is empty. The request state is that exact subject, verbatim.
  * Returns null when nothing falls through.
@@ -411,16 +418,18 @@ export function planKindDecisions(elements: Element[]): KindPlan | null {
   const maxTargets = Math.floor(MAX_BATCH_QUESTIONS / KIND_KEYS.length);
   const targets: KindPlan['targets'] = [];
   const requests: DecisionBatchRequest['requests'] = [];
+  let fallthrough = 0;
   for (const el of elements) {
-    if (targets.length >= maxTargets) break;
     if (el == null || Array.isArray(el.elements)) continue;
     const subject = el.text_en ?? el.text;
     if (typeof subject !== 'string' || classifyElement(subject).length > 0) continue;
+    fallthrough += 1;
+    if (targets.length >= maxTargets) continue;
     const id = `r${targets.length}`;
     targets.push({ id, requirement_id: el.id });
     requests.push({ id, state: subject, questions: { ...questions } });
   }
-  return targets.length === 0 ? null : { request: { requests }, targets };
+  return targets.length === 0 ? null : { request: { requests }, targets, fallthrough };
 }
 
 /**
@@ -462,8 +471,10 @@ export function applyKindDecisions(
 
 /**
  * The proposal pass: today's `analyzeCoverage(elements, [])` FIRST (so validation still throws
- * exactly as before), then at most one decide call for the elements that fell through. With
- * nothing to ask, no capability or a null decide, the deterministic report is returned as is.
+ * exactly as before), then one decide call per element that fell through, inside the site wall
+ * budget (`decideWithinBudget`). With nothing to ask, no capability or a null decide, the
+ * deterministic report is returned as is. When the budget or the item cap left zero-hit elements
+ * unasked, one stderr line reports how many got a proposal.
  */
 export function proposeCoverageWithDecisionModel(
   elements: Element[],
@@ -474,7 +485,12 @@ export function proposeCoverageWithDecisionModel(
   if (plan === null) return base;
   const decide: DecideFn | null = resolveSiteDecide(opts);
   if (decide === null) return base;
-  return applyKindDecisions(base, plan, decide(plan.request));
+  const run = decideWithinBudget(decide, plan.request);
+  const report = applyKindDecisions(base, plan, run.response);
+  if (run.outOfTime || plan.fallthrough > plan.targets.length) {
+    noteSkippedItems(report.items.filter((i) => i.model_proposal !== undefined).length, plan.fallthrough);
+  }
+  return report;
 }
 
 /**
