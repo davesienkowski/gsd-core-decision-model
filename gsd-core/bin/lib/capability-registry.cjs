@@ -1551,6 +1551,89 @@ const capabilities = {
       }
     }
   },
+  "decision-model": {
+    "id": "decision-model",
+    "role": "feature",
+    "version": "1.15.0",
+    "title": "Decision model",
+    "description": "Answers closed decision questions (choice, yes/no, ordered score) with a configurable local model backend through `gsd-tools decide`. Abstain-first and advisory only: every answer is either ok at or above a confidence floor or an abstain with a reason, and an abstain never fails the caller. Request state is untrusted text, so a model answer never gates a security or destructive action, and it is not fit for planning, execution, verification verdicts or text generation. Off by default; when off, every question abstains and no network call is made. Request state leaves the machine only when a non-loopback backend is explicitly allowed.",
+    "tier": "full",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.15.0"
+    },
+    "runtimeCompat": {
+      "supported": [
+        "*"
+      ],
+      "unsupported": []
+    },
+    "skills": [],
+    "agents": [],
+    "activationKey": "decision_model.enabled",
+    "config": {
+      "decision_model.enabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable the decision-model capability. When false (the shipped default) `gsd-tools decide` answers every question with an abstain of reason capability-off, exits 0, and makes no network call."
+      },
+      "decision_model.backend": {
+        "type": "enum",
+        "values": [
+          "openai-letter",
+          "jev"
+        ],
+        "default": "openai-letter",
+        "description": "Backend adapter. openai-letter asks an OpenAI-compatible /v1/chat/completions server for one option letter and reads its token log-probabilities as the confidence. jev passes the question vocabulary to a Jev-style /api/alpha/decisions endpoint."
+      },
+      "decision_model.base_url": {
+        "type": "string",
+        "default": "http://127.0.0.1:1234",
+        "description": "Base URL of the backend server. A non-loopback host is refused unless decision_model.allow_remote is true. A scheme-less value such as 127.0.0.1:1234 is invalid."
+      },
+      "decision_model.model": {
+        "type": "string",
+        "default": "",
+        "description": "Model identifier sent to the backend. Empty (the default) abstains model-missing: the capability never discovers or guesses a model."
+      },
+      "decision_model.allow_remote": {
+        "type": "boolean",
+        "default": false,
+        "description": "Consent to send request state to a non-loopback host. When false, a non-loopback decision_model.base_url abstains egress-not-consented with no network call."
+      },
+      "decision_model.min_confidence": {
+        "type": "number",
+        "default": 0.9,
+        "description": "Confidence floor in [0, 1]. An answer whose rounded confidence is below it is returned as an abstain of reason low-confidence. The confidence is a ranking signal, not a calibrated probability."
+      },
+      "decision_model.timeout_ms": {
+        "type": "number",
+        "default": 30000,
+        "description": "Per backend call timeout in milliseconds, an integer from 1 to 600000. The default covers a cold model load of about 9 seconds."
+      },
+      "decision_model.api_key_env": {
+        "type": "string",
+        "default": "OPENROUTER_API_KEY",
+        "description": "The NAME of the environment variable that holds the backend API key (used by the jev backend). It is never the key itself; the key is never written to config, argv, output or the log."
+      },
+      "decision_model.log_path": {
+        "type": "string",
+        "default": "",
+        "description": "Optional project-relative path of a local JSONL call log, one line per answer (status, backend, model, latency; never the state text or the key). Empty (the default) writes no log."
+      }
+    },
+    "commands": [
+      {
+        "family": "decide",
+        "module": "decision-model-command-router.cjs",
+        "router": "routeDecideCommand"
+      }
+    ],
+    "hooks": [],
+    "steps": [],
+    "contributions": [],
+    "gates": []
+  },
   "drift": {
     "id": "drift",
     "role": "feature",
@@ -4841,6 +4924,15 @@ const configKeys = {
   "review.effort.codex": "codex",
   "review.models.cursor": "cursor",
   "review.max_prompt_tokens_per_reviewer.cursor": "cursor",
+  "decision_model.enabled": "decision-model",
+  "decision_model.backend": "decision-model",
+  "decision_model.base_url": "decision-model",
+  "decision_model.model": "decision-model",
+  "decision_model.allow_remote": "decision-model",
+  "decision_model.min_confidence": "decision-model",
+  "decision_model.timeout_ms": "decision-model",
+  "decision_model.api_key_env": "decision-model",
+  "decision_model.log_path": "decision-model",
   "workflow.drift_threshold": "drift",
   "workflow.drift_action": "drift",
   "workflow.schema_drift_gate": "drift",
@@ -5063,6 +5155,64 @@ const configSchema = {
     "type": "number",
     "default": -1,
     "description": "Prompt-token budget for the Cursor reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "decision_model.enabled": {
+    "owner": "decision-model",
+    "type": "boolean",
+    "default": false,
+    "description": "Enable the decision-model capability. When false (the shipped default) `gsd-tools decide` answers every question with an abstain of reason capability-off, exits 0, and makes no network call."
+  },
+  "decision_model.backend": {
+    "owner": "decision-model",
+    "type": "enum",
+    "default": "openai-letter",
+    "description": "Backend adapter. openai-letter asks an OpenAI-compatible /v1/chat/completions server for one option letter and reads its token log-probabilities as the confidence. jev passes the question vocabulary to a Jev-style /api/alpha/decisions endpoint.",
+    "values": [
+      "openai-letter",
+      "jev"
+    ]
+  },
+  "decision_model.base_url": {
+    "owner": "decision-model",
+    "type": "string",
+    "default": "http://127.0.0.1:1234",
+    "description": "Base URL of the backend server. A non-loopback host is refused unless decision_model.allow_remote is true. A scheme-less value such as 127.0.0.1:1234 is invalid."
+  },
+  "decision_model.model": {
+    "owner": "decision-model",
+    "type": "string",
+    "default": "",
+    "description": "Model identifier sent to the backend. Empty (the default) abstains model-missing: the capability never discovers or guesses a model."
+  },
+  "decision_model.allow_remote": {
+    "owner": "decision-model",
+    "type": "boolean",
+    "default": false,
+    "description": "Consent to send request state to a non-loopback host. When false, a non-loopback decision_model.base_url abstains egress-not-consented with no network call."
+  },
+  "decision_model.min_confidence": {
+    "owner": "decision-model",
+    "type": "number",
+    "default": 0.9,
+    "description": "Confidence floor in [0, 1]. An answer whose rounded confidence is below it is returned as an abstain of reason low-confidence. The confidence is a ranking signal, not a calibrated probability."
+  },
+  "decision_model.timeout_ms": {
+    "owner": "decision-model",
+    "type": "number",
+    "default": 30000,
+    "description": "Per backend call timeout in milliseconds, an integer from 1 to 600000. The default covers a cold model load of about 9 seconds."
+  },
+  "decision_model.api_key_env": {
+    "owner": "decision-model",
+    "type": "string",
+    "default": "OPENROUTER_API_KEY",
+    "description": "The NAME of the environment variable that holds the backend API key (used by the jev backend). It is never the key itself; the key is never written to config, argv, output or the log."
+  },
+  "decision_model.log_path": {
+    "owner": "decision-model",
+    "type": "string",
+    "default": "",
+    "description": "Optional project-relative path of a local JSONL call log, one line per answer (status, backend, model, latency; never the state text or the key). Empty (the default) writes no log."
   },
   "workflow.drift_threshold": {
     "owner": "drift",
@@ -7885,6 +8035,11 @@ const commandFamilies = {
     "module": "claude-orchestration-command-router.cjs",
     "router": "routeClaudeOrchestrationCommand"
   },
+  "decide": {
+    "capId": "decision-model",
+    "module": "decision-model-command-router.cjs",
+    "router": "routeDecideCommand"
+  },
   "extract-messages": {
     "capId": "profile-pipeline",
     "module": "profile-pipeline-command-router.cjs",
@@ -8038,6 +8193,7 @@ const _requiresGraph = {
   "codex": [],
   "copilot": [],
   "cursor": [],
+  "decision-model": [],
   "drift": [],
   "external-job": [],
   "gap-analysis": [],

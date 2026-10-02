@@ -403,6 +403,8 @@
       "core-utils.cjs",
       "coverage.cjs",
       "decision-coverage-support.cjs",
+      "decision-model-command-router.cjs",
+      "decision-model.cjs",
       "decisions.cjs",
       "docs.cjs",
       "drift.cjs",

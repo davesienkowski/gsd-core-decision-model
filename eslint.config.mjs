@@ -175,6 +175,9 @@ export default tseslint.config(
       'gsd-core/bin/lib/complexity-trigger.cjs',
       // issue #1953: tsc-generated runtime artifact — lint the src/refactor-trigger-command-router.cts source.
       'gsd-core/bin/lib/refactor-trigger-command-router.cjs',
+      // decision-model (quick 261001-wza): tsc-generated runtime artifacts — lint the src/decision-model*.cts sources.
+      'gsd-core/bin/lib/decision-model.cjs',
+      'gsd-core/bin/lib/decision-model-command-router.cjs',
       'gsd-core/bin/lib/api-coverage.cjs',
       'gsd-core/bin/lib/artifacts.cjs',
       'gsd-core/bin/lib/assumption-delta.cjs',
