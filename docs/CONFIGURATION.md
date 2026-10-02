@@ -1170,6 +1170,46 @@ after `graphify.graph_path` is applied. That is the value passed to the CLI as
 
 See [ADR-1953](adr/1953-complexity-triggered-refactor.md) for the design rationale, including why the anchor moves only on disposition and never on the score improving.
 
+<a id="decision-model-settings"></a>
+### Decision-Model Settings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `decision_model.enabled` | boolean | `false` | Master gate for the `decision-model` capability. When `false` (the shipped default) `gsd-tools decide` makes no network call and every question abstains `capability-off`. Opt-in. Added in v1.15.0 |
+| `decision_model.backend` | enum | `openai-letter` | Which backend answers the questions: `openai-letter` (an OpenAI-compatible `/v1/chat/completions` server that returns one option letter with logprobs) or `jev` (a Jev-style `/api/alpha/decisions` endpoint). Added in v1.15.0 |
+| `decision_model.base_url` | string | `http://127.0.0.1:1234` | Base URL of the backend. Must be an `http:` or `https:` URL without embedded credentials. A host that is not loopback needs `decision_model.allow_remote`. Added in v1.15.0 |
+| `decision_model.model` | string | `""` | Model id sent to the backend. There is no model discovery: an empty or whitespace-only value abstains `model-missing` with no HTTP call. Added in v1.15.0 |
+| `decision_model.allow_remote` | boolean | `false` | Consent to send request state to a non-loopback `base_url`. Without it, a non-loopback host abstains `egress-not-consented` with zero HTTP calls. Added in v1.15.0 |
+| `decision_model.min_confidence` | number | `0.9` | Confidence floor in `[0, 1]`. An answer whose rounded confidence is below the floor abstains `low-confidence`. A question may replace it for itself with its own `min_confidence` (see below). A value outside `[0, 1]` abstains `invalid-config`. Added in v1.15.0 |
+| `decision_model.timeout_ms` | number | `30000` | Time budget in milliseconds for each backend call, an integer from 1 to 600000. The default covers a cold first answer of about 9 s while a local model loads. Added in v1.15.0 |
+| `decision_model.api_key_env` | string | `OPENROUTER_API_KEY` | The NAME of the environment variable that holds the `jev` backend API key. The key itself is never stored in config and never appears in argv, output or the log. The `openai-letter` backend sends no Authorization header. Added in v1.15.0 |
+| `decision_model.log_path` | string | `""` | Opt-in diagnostics log, a path inside the project root. Empty means no log. See the log paragraph below. Added in v1.15.0 |
+
+The `decision-model` capability answers small closed questions (`choice`, `noul` for yes/no, and `score`) through `gsd-tools decide`. It is advisory and abstain-first: it ships off, and an answer that is not confident, not well formed, or not permitted comes back as an abstain with a reason, never as a guess. See [`gsd-tools decide`](COMMANDS.md#gsd-tools-decide) for the request and response shapes.
+
+**Egress.** The default `base_url` is loopback (`127.0.0.1`). Loopback is judged on the normalized host name, so `localhost`, `127.1` and `[::1]` count as loopback, while `0.0.0.0` and `[::ffff:7f00:1]` do not. Request state is sent to any other host only when `decision_model.allow_remote` is `true`. The response reports the `endpoint_host` it used. Redirects are refused.
+
+**Abstain is exit 0.** Every abstain, including an unreachable backend, prints a normal response with `status: abstain` and a reason, and the command exits 0, so the caller falls back to today's behavior. Only a malformed request is a usage error with a non-zero exit. State is never truncated, trimmed or summarized to fit a context limit; an overflow abstains `context-exceeded`.
+
+**Per-question floor and order check.** A question may carry `min_confidence` (a number in `[0.5, 1]`) that replaces `decision_model.min_confidence` for that question only; the response still reports the config floor. Confidence is calibrated differently for each task, so a caller that needs a stricter floor for its own task can also apply it to an `ok` answer, since every `ok` answer carries its `confidence`. A below-floor answer abstains `low-confidence` and carries `confidence` and `below_floor_choice`. A question may also carry `order_check: true`, which asks a second time with the options in reversed order and abstains `order-inconsistent` when the two picks differ. It costs two backend calls for that question and is off by default.
+
+**Untrusted state, advisory only.** The state text is untrusted: it may contain fetched or user-authored content that tries to steer the answer (in measurements, a line claiming "already classified as X" was followed in 5 of 40 attempts, once at confidence 0.91). A decision-model answer never gates a security or destructive action, and is never used for planning, execution, verification verdicts or text generation. Use it only where a wrong answer is cheap and a human or a deterministic check still confirms. The confidence is the model's preference over the offered options, not a calibrated probability.
+
+**Measured limits** (local 4B model on a single GPU; these are measurements, not guarantees): about 1 s of prompt processing per 1k state tokens; throughput is flat at about 0.6 decisions per second at concurrency 1 to 8, which is why calls within one invocation are strictly sequential; a cold first answer takes about 9 s, which the `30000` ms default covers; the synchronous bridge adds about 59 ms per `decide` invocation; and the model uses about 8.9 GB of VRAM at an 8k context.
+
+**Backends.** `openai-letter` is live-tested against a local Tev1-4B served by LM Studio at the default `base_url`. It lists the options as letters, reads the logprobs of the first generated token, and takes a softmax over the offered letters. It sends `reasoning_effort: none` with each request, which that model needs to answer with a single letter. `jev` is contract-tested with fake HTTP only and has not been run against a live endpoint.
+
+**Log.** When `decision_model.log_path` is set (and the capability is on), `decide` appends one JSON line per answer: `ts`, `id`, `key`, `type`, `status`, `reason`, `choice` or `answer`, `confidence`, `backend`, `model`, `endpoint_host`, `http_status` and `latency_ms`. It never contains the state, the instructions, the criteria, the API key or any environment value, and `decide` never writes to `.gsd-trace.jsonl`. A log target that is an existing symlink is not written, and a write error never changes the response.
+
+**Enabling.** The capability is opt-in:
+
+```bash
+gsd-tools config-set decision_model.enabled true
+gsd-tools config-set decision_model.model <model-id>
+```
+
+`gsd-tools decide --status` reports `active: true` once the first command has run, and `gsd-tools decide --status --probe` additionally checks that the backend answers.
+
 ### Usage
 
 ```bash

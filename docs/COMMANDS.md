@@ -1666,6 +1666,66 @@ Trigger semantics match ESLint's `complexity: {max: N}` — strictly greater, so
 
 ---
 
+### `gsd-tools decide`
+
+Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) through a configurable backend. Advisory and abstain-first: gated on `decision_model.enabled: true` in `config.json` (see [Configuration Reference](CONFIGURATION.md#decision-model-settings)); while it is off, every question abstains `capability-off` and no network call is made. Request state is untrusted text, and an answer never gates a security or destructive action.
+
+| Flag | Description |
+|------|-------------|
+| `--request <path>` | Read the request JSON from a file. The path must resolve inside the project root and the file must be a regular file of at most 4 MiB |
+| `--request -` | Read the request JSON from stdin |
+| `--status` | Print `{active, backend, model, endpoint_host, min_confidence, reachable}`. `reachable` is `null` and no network call is made |
+| `--status --probe` | As `--status`, and also check that the backend answers (`reachable` becomes `true` or `false`). `--probe` is valid only with `--status`, and `--request` cannot be combined with `--status` |
+
+**Request.** Single form `{"state": "<text>", "questions": {"<key>": Q}}`, or batch form `{"requests": [{"id": "<id>", "state": "<text>", "questions": {...}}, ...]}`. A batch id is unique and is not `default`. `state` is required and is a string (an empty string is accepted), a plain object or an array; it is JSON-encoded into the user message as data and is never truncated. A question `Q` is one of:
+
+- `{"type": "choice", "instructions": "<question>", "criteria": {"<optionKey>": "<description>"}}`
+- `{"type": "noul", "instructions": "<yes/no question>"}`
+- `{"type": "score", "instructions": "<question>", "criteria": {"<levelKey>": "<description>"}}` with levels ordered low to high
+
+`choice` and `score` need 2 to 24 criteria, and a `noul` question has none. Ids, question keys and criteria keys match `/^[A-Za-z0-9_.-]{1,64}$/` and are never `__proto__`, `constructor` or `prototype`. A question may add `min_confidence` (a number in `[0.5, 1]`, replacing the configured floor for that question) and `order_check` (a boolean; ask again with the options reversed). There are at most 256 questions in one request.
+
+**Response.** `{"backend", "model", "endpoint_host", "min_confidence", "results": [{"id", "answers": {"<key>": A}}]}`, with results in request order and the id `default` for the single form. `min_confidence` is the configured floor. An answer `A` is one of:
+
+- choice: `{"status": "ok", "choice", "confidence", "probabilities"}`
+- noul: `{"status": "ok", "answer": "yes" | "no", "p_yes", "confidence"}`
+- score: `{"status": "ok", "choice", "score", "confidence", "probabilities"}`
+- `{"status": "abstain", "reason", "confidence"?, "below_floor_choice"?}`
+
+**Abstain reasons.** Precedence is the order given here for the first six, then the backend outcome, then the floor.
+
+| Reason | When it fires |
+|--------|---------------|
+| `capability-off` | `decision_model.enabled` is not `true`; nothing is sent |
+| `invalid-request` | A question is malformed: bad type, missing instructions, fewer than 2 criteria, a bad key, an invalid `min_confidence` or `order_check` |
+| `too-many-options` | More than 24 criteria |
+| `invalid-config` | A `decision_model.*` value is invalid, or the `jev` key is missing or rejected (HTTP 401 or 403) |
+| `egress-not-consented` | `base_url` is not loopback and `decision_model.allow_remote` is not `true` |
+| `model-missing` | `decision_model.model` is empty, or the backend does not know the model |
+| `unreachable` | The backend could not be reached or returned an error |
+| `timeout` | A backend call exceeded `decision_model.timeout_ms` |
+| `context-exceeded` | The state did not fit the model context; state is never truncated |
+| `invalid-output` | The completion was empty, cut off, unparseable, or not one of the offered options |
+| `low-confidence` | The rounded confidence is below the applied floor; carries `confidence` and `below_floor_choice` |
+| `order-inconsistent` | With `order_check`, the picks in the two option orders differed |
+
+After one `unreachable`, `timeout` or `model-missing` result, the remaining questions of that invocation abstain with the same reason and make no further call. Calls within one invocation are strictly sequential.
+
+**Exit codes.** `0` for every answer, including every abstain. Non-zero only for a usage error: a missing or conflicting flag, an unreadable, oversized or out-of-root request file, invalid JSON, or a structurally malformed request.
+
+**Provenance line.** A prose site that records a decision-model answer uses `decided-by: decision-model (conf 0.97, backend openai-letter)`.
+
+```bash
+node gsd-tools.cjs decide --request .planning/tmp/q.json   # Answer the questions in a request file
+node gsd-tools.cjs decide --request - < q.json             # Read the request from stdin
+node gsd-tools.cjs decide --status                         # Show the resolved config, no network call
+node gsd-tools.cjs decide --status --probe                 # Also check that the backend answers
+```
+
+See [Configuration Reference](CONFIGURATION.md#decision-model-settings) for the nine `decision_model.*` keys, the egress rule, and the measured limits.
+
+---
+
 ## AI Integration Commands
 
 ### `/gsd-ai-integration-phase`
