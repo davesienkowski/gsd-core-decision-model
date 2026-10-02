@@ -72,13 +72,25 @@ function fakeHttp(handler) {
   return { http, calls, get maxInFlight() { return maxInFlight; } };
 }
 
+/** One-token completion: the token is the emitted content, as an OpenAI-compatible server reports it. */
 function completion(content, top, extra = {}) {
   return {
     choices: [{
       message: { content },
       finish_reason: 'stop',
-      logprobs: { content: [{ top_logprobs: top }] },
+      logprobs: { content: [{ token: content, top_logprobs: top }] },
       ...extra,
+    }],
+  };
+}
+
+/** A completion whose logprobs.content lists several tokens, each `{token, top}`. */
+function multiToken(content, tokens) {
+  return {
+    choices: [{
+      message: { content },
+      finish_reason: 'stop',
+      logprobs: { content: tokens.map((t) => ({ token: t.token, top_logprobs: t.top })) },
     }],
   };
 }
@@ -955,6 +967,33 @@ describe('contract edges', () => {
     });
     assert.equal(answers.q.status, 'ok');
     assert.equal(answers.q.probabilities.b > 0, true);
+  });
+
+  test('WR-05: leading whitespace tokens are skipped; the letter token supplies the probabilities', async () => {
+    const lp = (p) => Math.log(p);
+    const { answers } = await ask({ q: choiceQ(['a', 'b']) }, {
+      handler: () => ({
+        ok: true,
+        status: 200,
+        body: multiToken('\nB', [
+          { token: '\n', top: [{ token: 'A', logprob: lp(0.92) }, { token: 'B', logprob: lp(0.08) }] },
+          { token: 'B', top: [{ token: 'B', logprob: lp(0.97) }, { token: 'A', logprob: lp(0.03) }] },
+        ]),
+      }),
+    });
+    assert.deepEqual(answers.q, { status: 'ok', choice: 'b', confidence: 0.97, probabilities: { a: 0.03, b: 0.97 } });
+  });
+
+  test('WR-05: a letter token that does not match the emitted content is invalid-output', async () => {
+    const top = [{ token: 'A', logprob: -0.01 }, { token: 'B', logprob: -5 }];
+    for (const body of [
+      multiToken('B', [{ token: 'A', top }]),
+      multiToken('A', [{ token: ' ', top }, { token: '  ', top }]),
+      multiToken('A', [{ top }]),
+    ]) {
+      const { answers } = await ask({ q: choiceQ(['a', 'b']) }, { handler: () => ({ ok: true, status: 200, body }) });
+      assert.deepEqual(answers.q, { status: 'abstain', reason: 'invalid-output' }, JSON.stringify(body).slice(0, 120));
+    }
   });
 
   test('empty content, finish_reason length, and empty or absent top_logprobs are invalid-output', async () => {

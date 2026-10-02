@@ -681,8 +681,14 @@ const openaiLetterBackend: Backend = Object.freeze({
     if (emitted.length === 0 || !labels.includes(emitted)) return bad();
     const logprobs = first['logprobs'];
     const contentLp = isPlainObject(logprobs) ? logprobs['content'] : undefined;
-    const firstTok: unknown = Array.isArray(contentLp) ? contentLp[0] : undefined;
-    const top = isPlainObject(firstTok) ? firstTok['top_logprobs'] : undefined;
+    // WR-05: the probabilities come from the token that carries the letter, which is
+    // the first token with non-whitespace text (content such as "\nB" starts with a
+    // whitespace token). That token must be the emitted letter, or the answer would
+    // rest on evidence about a different token.
+    const entries: unknown[] = Array.isArray(contentLp) ? contentLp : [];
+    const letterTok = entries.find((t) => isPlainObject(t) && typeof t['token'] === 'string' && t['token'].trim() !== '');
+    if (!isPlainObject(letterTok) || (letterTok['token'] as string).trim() !== emitted) return bad();
+    const top = letterTok['top_logprobs'];
     if (!Array.isArray(top) || top.length === 0) return bad();
 
     const byLabel = letterProbabilities(top, labels);

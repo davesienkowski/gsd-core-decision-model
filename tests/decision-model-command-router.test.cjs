@@ -141,7 +141,7 @@ function okChoiceBody(content, topLogprobs) {
     choices: [{
       message: { content },
       finish_reason: 'stop',
-      logprobs: { content: [{ top_logprobs: topLogprobs }] },
+      logprobs: { content: [{ token: content, top_logprobs: topLogprobs }] },
     }],
   };
 }
