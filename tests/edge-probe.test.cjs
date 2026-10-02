@@ -732,10 +732,13 @@ describe('edge-probe: decision-model fallthrough (261001-o30 D11 site #1)', () =
     for (const q of Object.values(ep.SHAPE_QUESTIONS)) assert.equal(q.type, 'noul');
   });
 
-  test('a large zero-hit set is capped so the batch stays inside the engine question limit', () => {
+  test('a large zero-hit set is capped at the first floor(256 / questions) items so the batch stays inside the engine question limit', () => {
     const reqs = Array.from({ length: 80 }, (_, i) => ({ id: `Q${i}`, text: `zzz ${i}` }));
     const plan = ep.planShapeDecisions(reqs);
-    assert.ok(plan.request.requests.length * 5 <= 256);
+    const cap = Math.floor(256 / 5);
+    assert.equal(plan.targets.length, cap, 'exactly as many items as fit the engine limit');
+    assert.deepEqual(plan.targets.map((x) => x.requirement_id), reqs.slice(0, cap).map((r) => r.id), 'the first N in input order');
+    assert.equal(plan.fallthrough, 80, 'every zero-hit item is counted, so the overflow can be reported');
     assert.equal(validateRequest(plan.request).ok, true);
   });
 

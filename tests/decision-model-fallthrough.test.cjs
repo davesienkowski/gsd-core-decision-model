@@ -96,10 +96,18 @@ describe('decision-model-fallthrough: resolveDecide gate', () => {
     assert.match(writes[0], /^decision-model: call failed \(boom\); continuing without it\n$/);
   });
 
-  test('resolveSiteDecide honours an injected function, an explicit null, and otherwise resolves via the gate', () => {
+  test('resolveSiteDecide honours an injected function, an explicit null, and otherwise resolves via the gate', (t) => {
     const fn = () => null;
     assert.equal(seam.resolveSiteDecide({ decide: fn }), fn);
     assert.equal(seam.resolveSiteDecide({ decide: null }), null);
+    // IN-07: the undefined-decide branch goes through the real gate for opts.cwd.
+    const { dir, home } = makeProject(t, { enabled: false });
+    const prev = process.env.GSD_HOME;
+    process.env.GSD_HOME = home;
+    t.after(() => { if (prev === undefined) delete process.env.GSD_HOME; else process.env.GSD_HOME = prev; });
+    assert.equal(seam.resolveSiteDecide({ cwd: dir }), null);
+    const on = makeProject(t, { enabled: true, model: 'fake-model' });
+    assert.equal(typeof seam.resolveSiteDecide({ cwd: on.dir }), 'function', 'an enabled project resolves to a decide function');
   });
 });
 

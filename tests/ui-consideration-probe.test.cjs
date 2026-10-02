@@ -585,10 +585,13 @@ describe('ui-consideration-probe: decision-model fallthrough (261001-o30 D11 sit
     for (const q of Object.values(uc.UI_KIND_QUESTIONS)) assert.equal(q.type, 'noul');
   });
 
-  test('a large zero-hit set is capped so the batch stays inside the engine question limit', () => {
+  test('a large zero-hit set is capped at the first floor(256 / questions) items so the batch stays inside the engine question limit', () => {
     const els = Array.from({ length: 80 }, (_, i) => ({ id: `Q${i}`, text: `zzz ${i}` }));
     const plan = uc.planKindDecisions(els);
-    assert.ok(plan.request.requests.length * KINDS.length <= 256);
+    const cap = Math.floor(256 / KINDS.length);
+    assert.equal(plan.targets.length, cap, 'exactly as many items as fit the engine limit');
+    assert.deepEqual(plan.targets.map((x) => x.requirement_id), els.slice(0, cap).map((e) => e.id), 'the first N in input order');
+    assert.equal(plan.fallthrough, 80, 'every zero-hit item is counted, so the overflow can be reported');
     assert.equal(validateRequest(plan.request).ok, true);
   });
 
