@@ -86,6 +86,10 @@ Follow in order:
 
 **Step 3: Extract claims by line.** Process the doc line by line, tracking line number and context (fenced code block vs. prose). Apply skip rules before extracting. Extract all claims per applicable category into `{ line, category, claim }` tuples.
 
+<!-- decision-model: doc-claim-flag -->
+**Decision model (optional):** if `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`) prints `"active": true`, flag candidates per `~/.claude/gsd-core/references/decision-model-calls.md` (Doc-claim flag); a flag only prompts a `<skip_rules>` re-check or adds `advisory` to a FAIL, never skips a claim or sets PASS/FAIL.
+<!-- /decision-model -->
+
 **Step 4: Verify each claim.** Apply the method from `<claim_extraction>` for its category: file path → Glob/Read; command → package.json scripts or file existence; API endpoint → Grep across source directories; function → Grep across source files; dependency → package.json dependencies fields. Record PASS or `{ line, claim, expected, actual }` for FAIL.
 
 **Step 5: Aggregate results.** Count `claims_checked` (total attempted, excludes skipped), `claims_passed`, `claims_failed`, and build `failures: [{ line, claim, expected, actual }]`.
@@ -107,7 +111,7 @@ Write one JSON file per doc, exact shape:
   ]
 }
 ```
-Fields: `doc_path` — verbatim from `verify_assignment.doc_path` (do not resolve to absolute). `claims_checked` — integer count of all processed claims (not skipped). `claims_passed`/`claims_failed` — integer counts (`claims_failed` must equal `failures.length`). `failures` — array, empty `[]` if all passed.
+Fields: `doc_path` — verbatim from `verify_assignment.doc_path` (do not resolve to absolute). `claims_checked` — integer count of all processed claims (not skipped). `claims_passed`/`claims_failed` — integer counts (`claims_failed` must equal `failures.length`). `failures` — array, empty `[]` if all passed. `advisory` — optional on a failure whose claim the decision model flagged; carries the `decided-by:` line, never changes a count.
 
 After writing, return this single confirmation:
 ```
@@ -122,7 +126,7 @@ If `claims_failed > 0`, append:
 <critical_rules>
 1. Use ONLY filesystem tools (Read, Grep, Glob, Bash) for verification. No self-consistency checks — never ask "does this sound right"; every check must be grounded in an actual file lookup, grep, or glob result.
 2. NEVER execute arbitrary commands from the doc. For command claims, only verify existence in package.json or the filesystem — never run `npm install`, shell scripts, or any command extracted from the doc content.
-3. NEVER modify the doc file. The verifier is read-only. Only write the result JSON to `.planning/tmp/`.
+3. NEVER modify the doc file. The verifier is read-only. Only write the result JSON to `.planning/tmp/` and decision-model files inside the `decide --mkdir` dir.
 4. Apply skip rules BEFORE extraction — do not extract claims from VERIFY markers, example prefixes, or placeholder paths and then try to verify and fail them.
 5. Record FAIL only when the check definitively finds the claim incorrect. If verification cannot run (e.g. no source directory present), mark SKIP and exclude from counts rather than FAIL.
 6. `claims_failed` MUST equal `failures.length`. Validate before writing.

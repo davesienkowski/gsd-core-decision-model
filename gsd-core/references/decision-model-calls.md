@@ -236,3 +236,29 @@ Scope: gsd-verifier sends only its stub-pattern hits (placeholder text, empty im
 Order: `ok` answers of `yes` by `p_yes` descending, then abstained hits (including those beyond the cap) in grep order, then `ok` answers of `no` by `p_yes` ascending; ties keep grep order. The agent reads and judges every hit in every group. Verdicts, severities, Known Stubs and findings are the agent's own; never quote the model as evidence.
 
 Run line, once and only when the call ran: VERIFICATION.md anti-pattern section (gsd-verifier), SUMMARY.md `## Known Stubs` (gsd-executor), REVIEW.md quick-depth findings (gsd-code-reviewer), UI-REVIEW.md Pillar 1 findings (gsd-ui-auditor).
+
+### Criterion flag
+
+Site `criterion-flag`. Host: gsd-roadmapper and its twin, once, after Step 5 has derived the success criteria of every phase and before Step 7 writes; zero criteria means no call. gsd-plan-checker would flag each `must_haves.truths` entry in Dimension 6, but it has no Write tool, so it gets no block (D26) and judges its truths as today.
+
+The criteria exist only in the agent's head, so write them once with the Write tool to `<dir>/text.txt`, one criterion per line (a line break inside one becomes a space), in phase order then criterion order. One item per criterion, `k` its number from 1: `{"id": "t<k>", "state_file": "<dir>/text.txt", "lines": [k, k], "prefix": "success criterion"}`. Question key `observable`, type `noul`:
+
+<!-- dm:questions criterion-flag -->
+```json
+{"observable": {"type": "noul", "instructions": "Can a user observe this criterion and does it resolve to pass or fail? Answer no for an implementation step (for example 'JWT library installed' or 'bcrypt installed') or a vague claim (for example 'works correctly', 'is properly set up', 'should feel good', 'looks reasonable')."}}
+```
+
+Gold: gsd-core/templates/phase-prompt.md:484-497 (Bad: vague acceptance criteria; Good: concrete, verifiable ones), gsd-core/templates/spec.md:64-69 (every criterion a PASS/FAIL checkbox), and the roadmapper Step 2 test (verifiable by a human using the application).
+
+Use: an `ok` `no` is only a hint to re-apply that Test to that criterion; a criterion with any other answer is judged as today. Nothing is dropped, reordered or re-worded because of the model, and the wording stays the agent's. The return summary lists each criterion the agent rewrote after a flag with its `decided-by:` line.
+
+### Doc-claim flag
+
+Site `doc-claim-flag`. Host: gsd-doc-verifier and its twin, after Step 3 has extracted the claims (so `<skip_rules>` are already applied) and before Step 4. One item per distinct doc line that holds at least one candidate, `k` numbered from 1 in line order, `n` the line: `{"id": "c<k>", "state_file": "<doc_path>", "lines": [max(1, n-1), n+1], "prefix": "doc claim at line <n> (<kinds>; <where>)"}`. `<doc_path>` is the doc as given, `<kinds>` the candidate categories on the line (file path, command, endpoint, function, dependency) and `<where>` is `fenced block` or `prose`. The engine reads the line and one line either side, so the doc is not copied and the claim token never goes into the prefix. Zero candidates means no call. Question key `real_claim`, type `noul`:
+
+<!-- dm:questions doc-claim-flag -->
+```json
+{"real_claim": {"type": "noul", "instructions": "Does this line hold a real claim about this repository (a path, command, endpoint, function or dependency the doc says exists here), rather than only an example, vendor quote, placeholder, template or version string?"}}
+```
+
+Use: an `ok` `no` only prompts a re-check of that line's candidates against `<skip_rules>`; a candidate is skipped only when a rule applies, and the verifier names the rule. Every remaining candidate gets today's filesystem check, which alone sets PASS or FAIL; the model never skips a claim or sets a verdict (D7). A flagged candidate that FAILs gains an optional `"advisory": "possible example or placeholder; decided-by: decision-model (conf X, backend Y)"` field. The counts, the order of `failures` (line order) and every other field are unchanged. Write no file outside `<dir>` for this call.

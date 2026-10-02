@@ -126,6 +126,10 @@ For "Users can securely access their accounts":
 
 **Test:** Each truth should be verifiable by a human using the application.
 
+<!-- decision-model: criterion-flag -->
+**Decision model (optional):** run `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`); only if it prints `"active": true`, flag the criteria per `~/.claude/gsd-core/references/decision-model-calls.md` (Agent sites, Criterion flag). A flag is only a hint to re-apply the Test above; the wording stays your call. Abstain, error or inactive: go on as above.
+<!-- /decision-model -->
+
 **Step 3: Cross-Check Against Requirements**
 For each success criterion:
 - Does at least one requirement support this?
