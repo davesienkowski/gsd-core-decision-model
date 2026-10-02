@@ -238,13 +238,14 @@ interface DecideDeps {
   /** Receives one entry per backend-answered question (status and latency only; never content). */
   diagnostics?: Diagnostic[];
   /**
-   * WR-01: epoch ms by which every backend call must have finished. Each call's
-   * timeout is clipped to the time left, and once less than MIN_CALL_MS is left the
-   * remaining questions abstain timeout without a call, so answers already computed
-   * survive the parent's spawn budget. decideSync sets it for the child.
+   * WR-01: the time, on the `now` clock, by which every backend call must have
+   * finished. Each call's timeout is clipped to the time left, and once less than
+   * MIN_CALL_MS is left the remaining questions abstain timeout without a call, so
+   * answers already computed survive the parent's spawn budget. The child sets it
+   * from the payload's budget_ms on its own monotonic clock (IN-03).
    */
   deadline?: number;
-  /** Clock seam for tests; defaults to Date.now. */
+  /** The clock `deadline` is read against; defaults to Date.now. The child passes performance.now. */
   now?: () => number;
 }
 
@@ -1362,14 +1363,17 @@ function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
   const budget = Math.min(uncapped, MAX_SPAWN_BUDGET_MS);
   // WR-01: when the cap bites, the child stops starting calls SPAWN_MARGIN_MS before the
   // kill, so it returns the answers it has and only the rest abstain timeout. Uncapped,
-  // every call already fits (each is bounded by timeout_ms), so no deadline is passed.
-  const deadline = uncapped > MAX_SPAWN_BUDGET_MS ? Date.now() + budget - SPAWN_MARGIN_MS : undefined;
+  // every call already fits (each is bounded by timeout_ms), so no budget is passed.
+  // IN-03: the child gets a duration and measures it on its own monotonic clock from its
+  // start, so a wall-clock step (common on WSL2 after sleep) cannot move its deadline.
+  // Its start-up time is covered by the margin.
+  const budgetMs = uncapped > MAX_SPAWN_BUDGET_MS ? budget - SPAWN_MARGIN_MS : undefined;
   let res: SpawnResultLike;
   try {
     res = spawn(
       process.execPath,
       [__filename, '--decide-child'],
-      { ...CHILD_SPAWN_OPTS, input: JSON.stringify({ mode: 'decide', request, config: cfg.config, deadline }), timeout: budget },
+      { ...CHILD_SPAWN_OPTS, input: JSON.stringify({ mode: 'decide', request, config: cfg.config, budget_ms: budgetMs }), timeout: budget },
     );
   } catch {
     return without(ABSTAIN_REASON.INVALID_OUTPUT);
@@ -1472,8 +1476,11 @@ function readPayload(): Json {
 async function childDecide(): Promise<void> {
   const payload = readPayload();
   const diagnostics: Diagnostic[] = [];
-  const deadline = typeof payload['deadline'] === 'number' && Number.isFinite(payload['deadline']) ? payload['deadline'] : undefined;
-  const response = await decide(payload['request'], { config: payload['config'], http: createFetchHttp(), diagnostics, deadline });
+  // IN-03: the budget is a duration on this process's monotonic clock, started now.
+  const now = (): number => performance.now();
+  const budgetMs = payload['budget_ms'];
+  const deadline = typeof budgetMs === 'number' && Number.isFinite(budgetMs) ? now() + budgetMs : undefined;
+  const response = await decide(payload['request'], { config: payload['config'], http: createFetchHttp(), diagnostics, deadline, now });
   // Let the process exit naturally: process.exit after a piped write can truncate stdout.
   process.stdout.write(JSON.stringify({ response, diagnostics }));
 }

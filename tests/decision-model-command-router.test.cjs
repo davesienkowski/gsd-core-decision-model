@@ -572,6 +572,30 @@ describe('gsd-tools decide (full contract)', () => {
     assert.equal(st.endpoint_host, '127.0.0.1:1234');
   });
 
+  test('IN-04: the engine child reads its call budget from the payload; a spent budget makes no call', async (t) => {
+    const stub = await startStub(t, answerWith('prd'));
+    const config = { enabled: true, model: 'stub-model', base_url: stub.url, timeout_ms: 5000 };
+    const twoQuestions = { state: 's', questions: { kind: CHOICE_REQUEST.questions.kind, again: CHOICE_REQUEST.questions.kind } };
+    const runChild = (payload) => new Promise((resolve) => {
+      const child = execFile(process.execPath, [ENGINE_PATH, '--decide-child'], { timeout: DECIDE_CLI_TIMEOUT_MS, killSignal: 'SIGKILL' }, (err, stdout) => {
+        resolve({ code: err ? 1 : 0, out: stdout ? JSON.parse(stdout) : null });
+      });
+      child.stdin.end(JSON.stringify(payload));
+    });
+
+    const spent = await runChild({ mode: 'decide', request: twoQuestions, config, budget_ms: 0 });
+    assert.equal(spent.code, 0);
+    assert.deepEqual(spent.out.response.results[0].answers, {
+      kind: { status: 'abstain', reason: 'timeout' }, again: { status: 'abstain', reason: 'timeout' },
+    });
+    assert.equal(stub.requests.length, 0, 'a spent budget sends nothing');
+
+    // Positive control: the same payload without a budget is answered, so the zero above is the budget at work.
+    const free = await runChild({ mode: 'decide', request: twoQuestions, config });
+    assert.equal(free.out.response.results[0].answers.kind.status, 'ok');
+    assert.equal(stub.requests.length, 2);
+  });
+
   test('WR-03: a directory or oversized --request path gives exactly one usage error', async (t) => {
     const project = makeProject(t, {});
     const res = await runDecide(t, ['--request', '.'], { cwd: project, env: { GSD_JSON_ERRORS: '1' } });

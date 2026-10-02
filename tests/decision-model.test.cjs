@@ -460,24 +460,23 @@ describe('WR-01 child deadline keeps answers computed before the spawn cap', () 
     assert.equal(r.results[0].answers.n.status, 'ok');
   });
 
-  test('decideSync hands the child a deadline inside the 900 s kill budget when the cap bites', (t) => {
-    // 2 calls x 600000 ms + 5000 > 900000: the budget is capped.
+  test('decideSync hands the child a call budget inside the 900 s kill budget when the cap bites', (t) => {
+    // 2 calls x 600000 ms + 5000 > 900000: the budget is capped. IN-03: the child gets a
+    // duration it measures on its own monotonic clock, never a wall-clock epoch.
     const { project } = syncProject(t, { timeout_ms: 600000 });
     let input = null;
     let timeout = null;
-    const before = Date.now();
     mod.decideSync(TWO_Q, { cwd: project, _spawn: (cmd, args, opts) => { input = JSON.parse(opts.input); timeout = opts.timeout; return { status: 1 }; } });
-    const after = Date.now();
     assert.equal(timeout, 900000);
-    assert.equal(typeof input.deadline, 'number');
-    assert.ok(input.deadline >= before + 895000 && input.deadline <= after + 895000, `deadline ${input.deadline}`);
+    assert.equal(input.budget_ms, 895000);
+    assert.equal(input.deadline, undefined, 'no wall-clock deadline crosses the process boundary');
   });
 
-  test('decideSync passes no deadline when every call fits the budget', (t) => {
+  test('decideSync passes no call budget when every call fits the budget', (t) => {
     const { project } = syncProject(t, { timeout_ms: 300 });
     let input = null;
     mod.decideSync(TWO_Q, { cwd: project, _spawn: (cmd, args, opts) => { input = JSON.parse(opts.input); return { status: 1 }; } });
-    assert.equal(input.deadline, undefined);
+    assert.equal(input.budget_ms, undefined);
   });
 
   test('a timeout_ms below the 1 s minimum still allows a call that fits', async () => {
