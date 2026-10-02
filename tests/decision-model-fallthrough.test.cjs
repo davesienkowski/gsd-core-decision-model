@@ -163,6 +163,13 @@ describe('decision-model-fallthrough: decidedBy', () => {
     );
   });
 
+  test('IN-03: an answer with no finite confidence reads conf n/a, never a fake 0.00', () => {
+    for (const answer of [{ status: 'ok' }, { status: 'ok', confidence: 'high' }, { status: 'ok', confidence: NaN }, null]) {
+      assert.equal(seam.decidedBy(answer, { backend: 'openai-letter' }), 'decided-by: decision-model (conf n/a, backend openai-letter)');
+    }
+    assert.equal(seam.decidedBy({ status: 'ok', confidence: 0 }, { backend: 'jev' }), 'decided-by: decision-model (conf 0.00, backend jev)');
+  });
+
   test('a missing backend reads unknown', () => {
     for (const r of [{}, null, { backend: '' }, { backend: 4 }]) {
       assert.equal(seam.decidedBy({ confidence: 0.5 }, r), 'decided-by: decision-model (conf 0.50, backend unknown)');

@@ -284,13 +284,14 @@ export function okChoice(answer: unknown): string | null {
  * The locked D14 provenance line: `decided-by: decision-model (conf 0.97, backend openai-letter)`.
  * Formatting is delegated to the engine's `formatProvenance` (C1) so the format exists once. A
  * decided-by line is only built for an applied answer, so the engine is already in play then.
+ * IN-03: an answer with no finite numeric confidence reads `conf n/a` rather than a made-up 0.00.
  */
 export function decidedBy(answer: unknown, response: unknown): string {
-  const raw = isRecord(answer) ? Number(answer['confidence']) : NaN;
-  const confidence = Number.isFinite(raw) ? raw : 0;
+  const raw = isRecord(answer) ? answer['confidence'] : undefined;
   const backendRaw = isRecord(response) && typeof response['backend'] === 'string' ? response['backend'] : '';
   const backend = backendRaw.length > 0 ? backendRaw : 'unknown';
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return `decided-by: decision-model (conf n/a, backend ${backend})`;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const engine = require('./decision-model.cjs') as { formatProvenance: (conf: number, backend: string) => string };
-  return engine.formatProvenance(confidence, backend);
+  return engine.formatProvenance(raw, backend);
 }
