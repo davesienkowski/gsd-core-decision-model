@@ -506,4 +506,15 @@ describe('gsd-tools decide (full contract)', () => {
       assert.equal(calls[0].reason, 'usage');
     }
   });
+
+  test('WR-09: a --request with no value is a usage error, even next to --status', async (t) => {
+    const project = makeProject(t, {});
+    const env = { GSD_JSON_ERRORS: '1' };
+    for (const args of [['--request', '--status'], ['--status', '--request'], ['--request', '--status', '--probe'], ['--request']]) {
+      const res = await runDecide(t, args, { cwd: project, env });
+      assert.notEqual(res.code, 0, args.join(' '));
+      assert.equal(res.stdout.trim(), '', `no status printed for ${args.join(' ')}`);
+      assert.equal(jsonErrorReason(res), 'usage', args.join(' '));
+    }
+  });
 });

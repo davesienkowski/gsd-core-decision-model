@@ -73,6 +73,13 @@ function routeDecideCommand({ args, cwd, raw, error, _engine, _readStdin, _core 
   const wantsStatus = data['status'] === true;
   const wantsProbe = data['probe'] === true;
 
+  // The parser reports both an absent --request and one with no value as null, so
+  // presence is checked on the raw args: `--request $FILE` with an empty FILE must
+  // not silently become a successful --status (WR-09).
+  if (requestArg === null && args.slice(1).includes('--request')) {
+    usage('decide --request needs a value: a path inside the project root, or - for stdin');
+    return undefined;
+  }
   if (wantsProbe && !wantsStatus) {
     usage('decide --probe is only valid with --status');
     return undefined;
