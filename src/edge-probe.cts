@@ -15,7 +15,10 @@
  *
  * Pure and dependency-free: it classifies each requirement's data/behavior shape, filters
  * the closed 8-category edge taxonomy to applicable categories, proposes concrete candidate
- * edges, and (via probe-core) merges author resolutions into a coverage report.
+ * edges, and (via probe-core) merges author resolutions into a coverage report. (IN-01: the CLI's
+ * proposal pass is the one exception, below. When a requirement falls through it reads the project
+ * config through the capability gate, so an invalid config.json prints the usual config warning
+ * on stderr; stdout is unchanged.)
  *
  * The pure functions above stay dependency-free and deterministic. Only the PROPOSAL pass of the
  * CLI (no resolutions file) consults the optional decision-model capability (quick 261001-wzs,

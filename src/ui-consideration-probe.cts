@@ -23,14 +23,16 @@
  * The pure functions stay dependency-free and deterministic. Only the PROPOSAL pass of the CLI
  * (no resolutions file) consults the optional decision-model capability (quick 261001-wzs, D11
  * site #1): for an element whose prose matched no kind cue and that has no authored `elements`
- * override, the model is asked which kinds apply: one call per element, in input order, all inside
- * a 60 s wall budget (CR-01); an element left unasked keeps its plain row and one stderr line says
- * so. A status-ok `yes` answer becomes a
- * `model_proposal` annotation on that element's existing `unclassified` row, with a `decided-by`
- * line per label and a `confirm_with: { elements }` override the author can paste to make the rows
- * deterministic. No row is added, removed or re-statused, so item keys, coverage counts and the
- * `autoResolve` unclassified exception stay exactly as without the model. A merge pass
- * (resolutions file given) never consults the model.
+ * override, the model is asked which kinds apply: one call per element, in input order, all
+ * inside a 60 s wall budget (CR-01); an element left unasked keeps its plain row and one stderr
+ * line says so. A status-ok `yes` answer becomes a `model_proposal` annotation on that element's
+ * existing `unclassified` row, with a `decided-by` line per label and a `confirm_with: { elements }`
+ * override the author can paste to make the rows deterministic. No row is added, removed or
+ * re-statused, so item keys, coverage counts and the `autoResolve` unclassified exception stay
+ * exactly as without the model. A merge pass (resolutions file given) never consults the model.
+ * IN-01: when an element falls through, the proposal pass reads the project config through the
+ * capability gate, so an invalid config.json prints the usual config warning on stderr; stdout is
+ * unchanged.
  */
 
 import {
