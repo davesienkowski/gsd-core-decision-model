@@ -31,7 +31,7 @@
         "jev"
       ],
       "default": "openai-letter",
-      "description": "Backend adapter. openai-letter asks an OpenAI-compatible /v1/chat/completions server for one option letter and reads its token log-probabilities as the confidence. jev passes the question vocabulary to a Jev-style /api/alpha/decisions endpoint."
+      "description": "Backend adapter. openai-letter asks an OpenAI-compatible /v1/chat/completions server for one option letter and reads its token log-probabilities as the confidence. jev passes the question vocabulary to a Jev-style /api/alpha/decisions endpoint and sends an API key, so it is honored only when $GSD_HOME/.gsd/defaults.json selects it: a project or workstream value naming it that differs from the user value is ignored (the user or default backend is used, and decide --status lists it in ignored_project_keys)."
     },
     "decision_model.base_url": {
       "type": "string",
