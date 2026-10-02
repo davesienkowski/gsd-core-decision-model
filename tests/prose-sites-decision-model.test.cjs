@@ -596,6 +596,14 @@ describe('decision-model-calls.md reference', () => {
     }
   });
 
+  test('IN-06: the profile pre-label cap fits its own 240000 ms budget at about 0.6 decisions per second', () => {
+    const body = subsection(readReference(), 'Profile pre-label');
+    const m = /the first ([0-9]+) only/.exec(body);
+    assert.ok(m, 'the section states its cap');
+    const cap = Number(m[1]);
+    assert.ok(cap / 0.6 <= 240000 / 1000 - 30, `${cap} messages need about ${Math.round(cap / 0.6)} s, past the budget less a cold start`);
+  });
+
   test('IN-05: the KB recall gate is the keyword-fallback path in the reference and the semantic-recall reference', () => {
     assert.ok(subsection(readReference(), 'KB recall').includes('keyword-fallback path (MemPalace absent or failing)'), 'KB recall gate');
     const recall = read('gsd-core/references/debugger-semantic-recall.md');

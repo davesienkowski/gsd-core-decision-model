@@ -273,7 +273,7 @@ cp '<sample>' '<dir>/messages.jsonl'
 
 The copy holds the user's private messages, so once `--mkdir` ran, run `gsd_run decide --rmdir '<dir>'` before spawning the profiler on every path, abstain, error and fallback included.
 
-`<sample>` is `output_file` of the profile-sample output. One item per message, the first 150 only (this site's cap, not 60), `k` its number from 1, which is also its line: `{"id": "m<k>", "state_file": "<dir>/messages.jsonl", "lines": [k, k], "prefix": "developer message"}`. Question key `dimension`, type `choice`, no `order_check` (a label only sets reading order):
+`<sample>` is `output_file` of the profile-sample output. One item per message, the first 120 only (this site's cap, not 60; about 200 s at 0.6 decisions per second, inside the 240000 ms budget), `k` its number from 1, which is also its line: `{"id": "m<k>", "state_file": "<dir>/messages.jsonl", "lines": [k, k], "prefix": "developer message"}`. Question key `dimension`, type `choice`, no `order_check` (a label only sets reading order):
 
 <!-- dm:questions profile-prelabel -->
 ```json
