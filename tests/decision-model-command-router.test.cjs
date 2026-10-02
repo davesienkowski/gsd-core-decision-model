@@ -9,8 +9,11 @@
  * blocks this process's event loop, so the in-process stub could never answer
  * (see tests/ci-next-health.test.cjs).
  *
- * Hermetic: every project and HOME is a temp dir removed in t.after; every
- * subprocess scrubs GSD_WORKSTREAM / GSD_PROJECT / GSD_SESSION_KEY.
+ * Hermetic for GSD state: every project and every GSD_HOME (the user-scope defaults
+ * root, $GSD_HOME/.gsd/defaults.json) is a temp dir removed in t.after, and every
+ * subprocess scrubs GSD_WORKSTREAM / GSD_PROJECT / GSD_SESSION_KEY. HOME and proxy
+ * variables are inherited from the shell; GSD reads its global defaults through
+ * GSD_HOME, so they do not leak in. Tests that read an API key pass it explicitly.
  */
 
 const { describe, test } = require('node:test');
