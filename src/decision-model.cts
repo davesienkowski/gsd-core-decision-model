@@ -506,6 +506,10 @@ function sameConfigValue(a: unknown, b: unknown): boolean {
  * is listed in `ignored_project_keys` unless it equals the user-scope value. So a
  * cloned repository can never choose the remote host that receives the state or
  * the user's API key, whatever the backend. Every other key resolves as before.
+ *
+ * `ignored_project_keys` names a project value only when it differs from the
+ * user-scope value in effect, so the copies of the user defaults that new projects
+ * carry raise no alarm.
  */
 function resolveDecisionConfig(cwd: string): ConfigValidation {
   /* eslint-disable @typescript-eslint/no-require-imports */
@@ -548,9 +552,14 @@ function resolveDecisionConfig(cwd: string): ConfigValidation {
       // Presence is judged on the raw workstream and root config.json files only:
       // the loaded config carries schema defaults for every capability key, and
       // an empty registry skips the schema-default level, so `found` means a
-      // project file set the key.
-      if (resolveConfigKey(dotKey, { config: {}, cwd, registry: {}, quiet: true }).found) ignored.push(dotKey);
+      // project file set the key. D22: it is reported only when it differs from
+      // the user-scope value in effect (the built-in default when the user set
+      // none). buildNewProjectConfig copies the user defaults into every new
+      // project, and such a copy is not an override.
+      const fromProject = resolveConfigKey(dotKey, { config: {}, cwd, registry: {}, quiet: true });
       const fromUser = _getNestedConfigValue(userDefaults, dotKey);
+      const userValue = fromUser.found ? fromUser.value : CONFIG_DEFAULTS[k as keyof typeof CONFIG_DEFAULTS];
+      if (fromProject.found && !sameConfigValue(fromProject.value, userValue)) ignored.push(dotKey);
       raw[k] = fromUser.found ? fromUser.value : undefined;
       continue;
     }

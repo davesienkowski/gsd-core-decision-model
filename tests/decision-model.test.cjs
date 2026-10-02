@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const fc = require('./helpers/fast-check-setup.cjs');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, runGsdTools } = require('./helpers.cjs');
 const { splitLines } = require('../gsd-core/bin/lib/text-lines.cjs');
 const mod = require('../gsd-core/bin/lib/decision-model.cjs');
 
@@ -276,6 +276,44 @@ describe('D21 user-scope-only keys (CR-01)', () => {
     const r = mod.resolveDecisionConfig(project);
     assert.equal(r.config.allow_remote, true);
     assert.deepEqual(r.ignored_project_keys, ['decision_model.allow_remote']);
+  });
+
+  test('D22: a project made by config-new-project carries copies of the user defaults, and none is reported as ignored', (t) => {
+    const home = createTempDir('gsd-dm-newproj-home-');
+    const project = createTempDir('gsd-dm-newproj-');
+    const prevHome = process.env.GSD_HOME;
+    t.after(() => {
+      if (prevHome === undefined) delete process.env.GSD_HOME; else process.env.GSD_HOME = prevHome;
+      cleanup(project);
+      cleanup(home);
+    });
+    const userDm = { enabled: true, model: 'm', allow_remote: true, api_key_env: 'JEV_API_KEY', base_url: 'https://jev.example' };
+    fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify({ decision_model: userDm }));
+    // buildNewProjectConfig reads os.homedir(); the decision model reads GSD_HOME. Point both at one home.
+    const made = runGsdTools('config-new-project', project, { HOME: home, USERPROFILE: home, GSD_HOME: home });
+    assert.ok(made.success, made.error);
+    const written = JSON.parse(fs.readFileSync(path.join(project, '.planning', 'config.json'), 'utf8'));
+    assert.deepEqual(written.decision_model, userDm, 'precondition: the new project copied the user defaults');
+
+    process.env.GSD_HOME = home;
+    const r = mod.resolveDecisionConfig(project);
+    assert.deepEqual(r.ignored_project_keys, [], 'a copied value equal to the user value is not an override');
+    assert.equal(r.config.allow_remote, true);
+    assert.equal(r.config.api_key_env, 'JEV_API_KEY');
+    assert.equal(r.config.base_url, 'https://jev.example');
+  });
+
+  test('a project value is reported only when it differs from the user-scope value (or the default when the user set none)', (t) => {
+    const same = mod.resolveDecisionConfig(scopes(t, { allow_remote: false, api_key_env: 'OPENROUTER_API_KEY' }));
+    assert.deepEqual(same.ignored_project_keys, [], 'values equal to the defaults in effect change nothing');
+    const wider = mod.resolveDecisionConfig(scopes(t, { allow_remote: true, api_key_env: 'OPENROUTER_API_KEY' }));
+    assert.deepEqual(wider.ignored_project_keys, ['decision_model.allow_remote']);
+    const copied = mod.resolveDecisionConfig(scopes(t, { allow_remote: true, api_key_env: 'JEV_API_KEY' }, { allow_remote: true, api_key_env: 'JEV_API_KEY' }));
+    assert.deepEqual(copied.ignored_project_keys, []);
+    const differs = mod.resolveDecisionConfig(scopes(t, { api_key_env: 'OTHER_API_KEY' }, { api_key_env: 'JEV_API_KEY' }));
+    assert.deepEqual(differs.ignored_project_keys, ['decision_model.api_key_env']);
+    assert.equal(differs.config.api_key_env, 'JEV_API_KEY');
   });
 
   test('api_key_env must be an upper-case NAME ending in _API_KEY', () => {
