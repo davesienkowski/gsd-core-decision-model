@@ -76,6 +76,7 @@ module.exports = {
   "tests/cursor-hooks.test.cjs",
   "tests/cursor-subagent-isolation.test.cjs",
   "tests/decision-model-command-router.test.cjs",
+  "tests/decision-model-fallthrough.prohibitions.test.cjs",
   "tests/decision-model-fallthrough.test.cjs",
   "tests/decision-model.test.cjs",
   "tests/dispatch-identity.test.cjs",
