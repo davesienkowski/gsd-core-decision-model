@@ -209,6 +209,8 @@ interface BackendLimits {
  */
 interface Backend {
   id: string;
+  /** True when every call carries an API key; such a backend needs https for any non-loopback host (D21). */
+  sendsCredential: boolean;
   limits(): BackendLimits;
   decideOne?(question: Question, state: unknown, ctx: BackendContext, presentation: Presentation): Promise<BackendOutcome>;
   decideAll?(state: unknown, items: Item[], ctx: BackendContext, presentation: Presentation): Promise<Map<string, BackendOutcome>>;
@@ -437,6 +439,12 @@ function validateDecisionConfig(raw: unknown): ConfigValidation {
   if (!baseUrlOk) problems.push('base_url must be an absolute http(s) URL without credentials');
   config['base_url'] = baseUrl;
 
+  // D21 (WR-06): a backend that sends an API key never sends it as cleartext to another host.
+  if (baseUrlOk && typeof backend === 'string' && hasOwn(BACKENDS, backend) && BACKENDS[backend].sendsCredential
+    && !credentialSafeUrl(baseUrl)) {
+    problems.push(`backend ${backend} sends an API key, so a non-loopback base_url must use https`);
+  }
+
   const model = pick('model');
   if (typeof model !== 'string') { problems.push('model must be a string'); config['model'] = ''; } else config['model'] = model.trim();
 
@@ -523,6 +531,12 @@ function isLoopbackUrl(url: unknown): boolean {
   const host = u.hostname;
   if (host === 'localhost' || host === '[::1]' || host === '::1') return true;
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+/** D21: true when a credential may be sent to this URL: loopback, or https. Unparseable is false. */
+function credentialSafeUrl(url: unknown): boolean {
+  if (isLoopbackUrl(url)) return true;
+  try { return new URL(url as string).protocol === 'https:'; } catch { return false; }
 }
 
 function endpointHost(baseUrl: unknown): string | null {
@@ -615,6 +629,7 @@ function classifyFailure(res: HttpResult): AbstainReason {
 
 const openaiLetterBackend: Backend = Object.freeze({
   id: 'openai-letter',
+  sendsCredential: false,
   limits(): BackendLimits {
     return { maxOptions: MAX_CRITERIA, contextTokens: null, locality: 'local' };
   },
@@ -765,6 +780,7 @@ function mapJevAnswer(q: Question, raw: unknown, presentation: Presentation, htt
 
 const jevBackend: Backend = Object.freeze({
   id: 'jev',
+  sendsCredential: true,
   limits(): BackendLimits {
     return { maxOptions: MAX_CRITERIA, contextTokens: null, locality: 'remote' };
   },
@@ -775,6 +791,9 @@ const jevBackend: Backend = Object.freeze({
       return out;
     };
 
+    // Defense in depth for D21: config validation already refuses this, but the key
+    // must never cross the network as cleartext to a non-loopback host.
+    if (!credentialSafeUrl(ctx.config.base_url)) return failAll(ABSTAIN_REASON.INVALID_CONFIG, null);
     // The key comes from the environment only; it goes into one header and nowhere else.
     const apiKey = ctx.env[ctx.config.api_key_env];
     if (typeof apiKey !== 'string' || apiKey.trim().length === 0) return failAll(ABSTAIN_REASON.INVALID_CONFIG, null);

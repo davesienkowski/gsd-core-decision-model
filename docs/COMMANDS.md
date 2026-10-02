@@ -1699,7 +1699,7 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 | `capability-off` | `decision_model.enabled` is not `true`; nothing is sent |
 | `invalid-request` | A question is malformed: bad type, missing instructions, fewer than 2 criteria, a bad key, an invalid `min_confidence` or `order_check` |
 | `too-many-options` | More than 24 criteria |
-| `invalid-config` | A `decision_model.*` value is invalid, or the `jev` key is missing or rejected (HTTP 401 or 403) |
+| `invalid-config` | A `decision_model.*` value is invalid, the `jev` backend would send its key over plain `http:` to a non-loopback host, or the `jev` key is missing or rejected (HTTP 401 or 403) |
 | `egress-not-consented` | `base_url` is not loopback and `decision_model.allow_remote` is not `true` in the user defaults file |
 | `model-missing` | `decision_model.model` is empty, or the backend does not know the model |
 | `unreachable` | The backend could not be reached or returned an error |

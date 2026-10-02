@@ -439,6 +439,20 @@ describe('jev backend (fake HTTP only)', () => {
     }
   });
 
+  test('WR-06: a key is never sent over plain http to a non-loopback host (invalid-config, zero calls)', async () => {
+    for (const base of ['http://jev.example.test', 'http://192.0.2.1:8080/']) {
+      const h = fakeHttp(jevHandler({ n: { noul: 0.9 } }));
+      const r = await mod.decide(req({ n: MIXED.n }), { config: jevCfg({ base_url: base }), http: h.http, env: ENV });
+      assert.deepEqual(r.results[0].answers.n, { status: 'abstain', reason: 'invalid-config' }, base);
+      assert.equal(h.calls.length, 0, base);
+    }
+    assert.equal(mod.validateDecisionConfig(jevCfg({ base_url: 'http://jev.example.test' })).valid, false);
+    // Loopback http and remote https are both allowed; openai-letter sends no key, so http is fine for it.
+    for (const [over, ok] of [[{ base_url: 'http://127.0.0.1:9' }, true], [{}, true], [{ backend: 'openai-letter', base_url: 'http://jev.example.test' }, true]]) {
+      assert.equal(mod.validateDecisionConfig(jevCfg(over)).valid, ok, JSON.stringify(over));
+    }
+  });
+
   test('api_key_env names the variable that is read', async () => {
     const h = fakeHttp(jevHandler({ n: { noul: 0.9 } }));
     const r = await mod.decide(
