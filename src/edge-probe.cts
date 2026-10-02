@@ -332,8 +332,8 @@ export interface ShapePlan {
 const SHAPE_KEYS = Object.keys(SHAPE_CUES) as Shape[];
 
 /**
- * Plan the batched request for requirements the regex could not label (sent one request per
- * call by the proposal pass). Pure. A requirement is
+ * Plan the batched request for requirements the regex could not label (sent as one batched call
+ * by the proposal pass, each requirement's questions contiguous). Pure. A requirement is
  * asked only when it has no authored `shapes` array (including the `[]` opt-out) and
  * `classifyShape(text_en ?? text)` is empty. The request state is that exact subject, verbatim.
  * Returns null when nothing falls through.
@@ -399,7 +399,7 @@ export function applyShapeDecisions(
 
 /**
  * The proposal pass: today's `analyzeCoverage(requirements, [])` FIRST (so validation still
- * throws exactly as before), then one decide call per requirement that fell through, inside the
+ * throws exactly as before), then ONE batched decide call for the requirements that fell through, bounded by the
  * site wall budget (`decideWithinBudget`). With nothing to ask, no capability or a null decide,
  * the deterministic report is returned as is. When the budget or the item cap left zero-hit
  * requirements unasked, one stderr line reports how many got a proposal.

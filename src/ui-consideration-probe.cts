@@ -407,8 +407,8 @@ export interface KindPlan {
 const KIND_KEYS = Object.keys(UI_CUES) as UIElementKind[];
 
 /**
- * Plan the batched request for elements the regex could not label (sent one request per call by
- * the proposal pass). Pure. An element is asked
+ * Plan the batched request for elements the regex could not label (sent as one batched call by
+ * the proposal pass, each element's questions contiguous). Pure. An element is asked
  * only when it has no authored `elements` array (including the `[]` opt-out) and
  * `classifyElement(text_en ?? text)` is empty. The request state is that exact subject, verbatim.
  * Returns null when nothing falls through.
@@ -473,8 +473,8 @@ export function applyKindDecisions(
 
 /**
  * The proposal pass: today's `analyzeCoverage(elements, [])` FIRST (so validation still throws
- * exactly as before), then one decide call per element that fell through, inside the site wall
- * budget (`decideWithinBudget`). With nothing to ask, no capability or a null decide, the
+ * exactly as before), then ONE batched decide call for the elements that fell through, bounded by the
+ * site wall budget (`decideWithinBudget`). With nothing to ask, no capability or a null decide, the
  * deterministic report is returned as is. When the budget or the item cap left zero-hit elements
  * unasked, one stderr line reports how many got a proposal.
  */
