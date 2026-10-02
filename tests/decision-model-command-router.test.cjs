@@ -399,7 +399,7 @@ describe('gsd-tools decide (full contract)', () => {
     assert.equal(stub.requests.length, 2);
   });
 
-  test('log_path gets one JSON line per answer, never the state, and no .gsd-trace.jsonl appears', async (t) => {
+  test('log_path gets one JSON line per answer and never the state', async (t) => {
     const SENTINEL = 'SENTINEL-STATE-8f3a1c';
     const stub = await startStub(t, answerWith('prd'));
     const project = makeProject(t, {
@@ -423,9 +423,42 @@ describe('gsd-tools decide (full contract)', () => {
     assert.equal(rec.http_status, 200);
     assert.equal(rec.key, 'kind');
     assert.ok(!text.includes(SENTINEL), 'the state and instructions never reach the log');
-    for (const dir of [project, path.join(project, '.planning')]) {
-      assert.equal(fs.existsSync(path.join(dir, '.gsd-trace.jsonl')), false, `${dir}/.gsd-trace.jsonl`);
-    }
+  });
+
+  test('WR-08: with auditing on, the decision payload never reaches .gsd-trace.jsonl (ADR-2619)', async (t) => {
+    const SENTINEL = 'SENTINEL-TRACE-5b7e2d';
+    const stub = await startStub(t, answerWith('prd'));
+    const project = makeProject(t, { enabled: true, model: 'stub-model', base_url: stub.url, timeout_ms: 5000 });
+    const trace = path.join(project, '.planning', '.gsd-trace.jsonl');
+    const audit = { GSD_AUDIT: '1', GSD_AUDIT_ARGS: '1' };
+
+    // Positive control: under the same env an audited hub command writes the trace in
+    // this project, so the check below reads a live trace rather than passing vacuously.
+    const controlHome = createTempDir('gsd-decide-control-home-');
+    t.after(() => cleanup(controlHome));
+    const controlEnv = { ...process.env, ...audit, GSD_HOME: controlHome };
+    delete controlEnv.GSD_WORKSTREAM;
+    delete controlEnv.GSD_PROJECT;
+    delete controlEnv.GSD_SESSION_KEY;
+    await new Promise((resolve) => {
+      execFile(process.execPath, [GSD_TOOLS, 'phase', 'next-decimal', '1'], {
+        cwd: project, timeout: DECIDE_CLI_TIMEOUT_MS, killSignal: 'SIGKILL', env: controlEnv,
+      }, () => resolve());
+    });
+    assert.ok(fs.existsSync(trace), 'control: GSD_AUDIT=1 produces .planning/.gsd-trace.jsonl in this project');
+    const before = fs.readFileSync(trace, 'utf8');
+
+    // The sentinel is in the state, the instructions and the request file name (an args leak).
+    const q = { ...CHOICE_REQUEST.questions.kind, instructions: `Which kind? ${SENTINEL}` };
+    const file = writeRequest(project, { state: `${SENTINEL} body text`, questions: { kind: q } }, `${SENTINEL}.json`);
+    const res = await runDecide(t, ['--request', file], { cwd: project, env: audit });
+    assert.equal(res.code, 0, `stderr: ${res.stderr}`);
+    assert.equal(JSON.parse(res.stdout).results[0].answers.kind.status, 'ok');
+
+    const after = fs.readFileSync(trace, 'utf8');
+    assert.ok(after.startsWith(before), 'the trace is append-only');
+    assert.ok(!after.includes(SENTINEL), 'no state, instructions or request path in the trace');
+    assert.equal(fs.existsSync(path.join(project, '.gsd-trace.jsonl')), false, 'no trace at the project root');
   });
 
   test('without log_path no file is written', async (t) => {
