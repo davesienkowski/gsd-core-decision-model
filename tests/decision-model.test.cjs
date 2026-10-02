@@ -1064,6 +1064,21 @@ describe('contract edges', () => {
     assert.ok(!h.calls[0].body.messages[0].content.includes('padded'));
   });
 
+  test('FIDELITY: the user message is byte-identical to the eval protocol (Python json.dumps, ensure_ascii=False)', async () => {
+    // Expected bytes generated once with Python 3 from the same request, exactly as
+    // eval2/lib.py decide() builds the message:
+    //   json.dumps({"state": state, "question": q, "options": options}, ensure_ascii=False)
+    // (separators ", " and ": ", key order as constructed, non-ASCII kept, control
+    // characters escaped, floats in Python repr form).
+    const REQUEST_TEXT = "{\"state\": {\"title\": \"Caf\u00e9 \u4e2d\u6587 \ud83d\ude80 says \\\"hi\\\"\", \"body\": \"line1\\nline2\\ttab \\\\ back/slash \\u0001 \\u007f \u2028 end\", \"n\": [1, -3, 0, 0.5, 1e-7, 1.5e300, 123456.789, 0.0001, 12345678901234.5], \"flags\": {\"ok\": true, \"no\": false, \"none\": null}, \"empty\": {\"a\": [], \"b\": {}}}, \"questions\": {\"q\": {\"type\": \"choice\", \"instructions\": \"Which \u00e9tat applies?\\nPick one.\", \"criteria\": {\"alpha\": \"First \\\"quoted\\\" option\", \"beta_2\": \"Second, with \u00fcml\u00e4ut\", \"gamma.x\": \"Third\\tone\"}}}}";
+    const PYTHON_CONTENT = "{\"state\": {\"title\": \"Caf\u00e9 \u4e2d\u6587 \ud83d\ude80 says \\\"hi\\\"\", \"body\": \"line1\\nline2\\ttab \\\\ back/slash \\u0001 \u007f \u2028 end\", \"n\": [1, -3, 0, 0.5, 1e-07, 1.5e+300, 123456.789, 0.0001, 12345678901234.5], \"flags\": {\"ok\": true, \"no\": false, \"none\": null}, \"empty\": {\"a\": [], \"b\": {}}}, \"question\": \"Which \u00e9tat applies?\\nPick one.\", \"options\": [{\"label\": \"A\", \"key\": \"alpha\", \"description\": \"First \\\"quoted\\\" option\"}, {\"label\": \"B\", \"key\": \"beta_2\", \"description\": \"Second, with \u00fcml\u00e4ut\"}, {\"label\": \"C\", \"key\": \"gamma.x\", \"description\": \"Third\\tone\"}]}";
+    const request = JSON.parse(REQUEST_TEXT);
+    const h = fakeHttp(pickByKey(() => 'alpha'));
+    await mod.decide(request, { config: cfg(), http: h.http });
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0].body.messages[1].content, PYTHON_CONTENT);
+  });
+
   test('results come back in request order and the single form is id default', async () => {
     const h = fakeHttp(pickByKey(() => 'a'));
     const r = await mod.decide(

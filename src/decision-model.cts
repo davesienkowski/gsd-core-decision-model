@@ -651,6 +651,68 @@ function letterProbabilities(topLogprobs: unknown, labels: readonly string[]): R
   return out;
 }
 
+// ─── Eval-protocol serializer ─────────────────────────────────────────────────
+
+/** Python json's short escapes; every other character below U+0020 becomes \u00XX (lower-case hex). */
+const PY_SHORT_ESCAPES: Readonly<Record<string, string>> = Object.freeze({
+  '"': '\\"', '\\': '\\\\', '\n': '\\n', '\r': '\\r', '\t': '\\t', '\b': '\\b', '\f': '\\f',
+});
+
+function pyString(s: string): string {
+  // Code units are copied as they are, so non-ASCII text (and even a lone surrogate) is kept, as ensure_ascii=False does.
+  const body = s.replace(/["\\\u0000-\u001f]/g, (c) => PY_SHORT_ESCAPES[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  return `"${body}"`;
+}
+
+/**
+ * A number as Python prints it. A safe integer prints as an int. Any other finite
+ * number prints as Python's float repr: the shortest round-trip digits, positional
+ * when the decimal exponent is in [-4, 16), otherwise d.ddde+XX with at least two
+ * exponent digits. (JSON.parse cannot tell 2 from 2.0, so an integer-valued float
+ * in the request prints as an int here. The other known difference is in the
+ * request itself: JSON.parse puts canonical-integer object keys inside the state
+ * first, which is why criteria keys may not be integers.)
+ */
+function pyNumber(n: number): string {
+  if (!Number.isFinite(n)) return Number.isNaN(n) ? 'NaN' : (n > 0 ? 'Infinity' : '-Infinity');
+  if (Number.isSafeInteger(n)) return String(n === 0 ? 0 : n);
+  const [mantissa, expText] = Math.abs(n).toExponential().split('e');
+  const exp = Number(expText);
+  const digits = mantissa.replace('.', '');
+  const sign = n < 0 ? '-' : '';
+  if (exp >= -4 && exp < 16) {
+    if (exp < 0) return `${sign}0.${'0'.repeat(-exp - 1)}${digits}`;
+    const whole = digits.slice(0, exp + 1).padEnd(exp + 1, '0');
+    const frac = digits.slice(exp + 1);
+    return `${sign}${whole}.${frac === '' ? '0' : frac}`;
+  }
+  const m = digits.length > 1 ? `${digits[0]}.${digits.slice(1)}` : digits;
+  return `${sign}${m}e${exp < 0 ? '-' : '+'}${String(Math.abs(exp)).padStart(2, '0')}`;
+}
+
+/**
+ * FIDELITY: Python `json.dumps(value, ensure_ascii=False)` with its default
+ * separators (", " and ": ") and key order as given. The openai-letter user message
+ * is serialized with this so it is byte-identical to the measured eval protocol
+ * (eval2/lib.py decide()); JSON.stringify's compact form differs in every separator.
+ * An undefined object member is skipped and an undefined array slot is null, as in
+ * JSON.stringify; a request parsed from JSON never holds either.
+ */
+function pythonJsonDumps(v: unknown): string {
+  if (v === null || v === undefined) return 'null';
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  if (typeof v === 'number') return pyNumber(v);
+  if (typeof v === 'string') return pyString(v);
+  if (Array.isArray(v)) return `[${v.map((e) => pythonJsonDumps(e)).join(', ')}]`;
+  if (typeof v === 'object') {
+    const o = v as Json;
+    const parts: string[] = [];
+    for (const k of Object.keys(o)) if (o[k] !== undefined) parts.push(`${pyString(k)}: ${pythonJsonDumps(o[k])}`);
+    return `{${parts.join(', ')}}`;
+  }
+  return 'null';
+}
+
 // ─── Backends ─────────────────────────────────────────────────────────────────
 
 interface Option { label: string; key: string; description: string }
@@ -717,7 +779,8 @@ const openaiLetterBackend: Backend = Object.freeze({
       model: ctx.config.model,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: JSON.stringify({ state, question: q.instructions, options }) },
+        // FIDELITY: byte-identical to the eval protocol's json.dumps(..., ensure_ascii=False).
+        { role: 'user', content: pythonJsonDumps({ state, question: q.instructions, options }) },
       ],
       temperature: 0,
       max_tokens: 8,
