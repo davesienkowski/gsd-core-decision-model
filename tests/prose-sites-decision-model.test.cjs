@@ -222,7 +222,8 @@ const SITES = [
       '**Stub classification:** A grep match is a STUB only when the value flows to rendering or user-visible output AND no other code path populates it with real data.',
       '**Debt marker gate:** Any `TBD`, `FIXME`, or `XXX` marker in a file modified by this phase is a 🛑 BLOCKER',
     ],
-    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank'],
+    // IN-03: the exclusion matches the reference Scope (TODO and HACK hits are not sent either).
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank', 'not the debt or cleanup marker hits'],
   },
   {
     file: 'agents/gsd-executor.md',

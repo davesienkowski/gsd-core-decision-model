@@ -413,7 +413,7 @@ grep -n -B 2 -A 2 "console\.log" "$file" 2>/dev/null | grep -E "^\s*(const|funct
 ```
 
 <!-- decision-model: grep-rank -->
-**Decision model (optional):** run `gsd_run decide --status`; only if it prints `"active": true`, pre-rank the stub-pattern hits (not the TBD/FIXME/XXX ones) per `~/.claude/gsd-core/references/decision-model-calls.md` (Agent sites, Grep-hit pre-rank) before classifying. You still read and judge every hit. Abstain, error or inactive: scan in grep order.
+**Decision model (optional):** run `gsd_run decide --status`; only if it prints `"active": true`, pre-rank the stub-pattern hits (not the debt or cleanup marker hits) per `~/.claude/gsd-core/references/decision-model-calls.md` (Agent sites, Grep-hit pre-rank) before classifying. You still read and judge every hit. Abstain, error or inactive: scan in grep order.
 <!-- /decision-model -->
 
 **Stub classification:** A grep match is a STUB only when the value flows to rendering or user-visible output AND no other code path populates it with real data. A test helper, type default, or initial state that gets overwritten by a fetch/store is NOT a stub. Check for data-fetching (useEffect, fetch, query, useSWR, useQuery, subscribe) that writes to the same variable before flagging.
