@@ -560,18 +560,30 @@ function endpointHost(baseUrl: unknown): string | null {
 /**
  * Probability per option letter from a top_logprobs list. A token counts as a
  * letter only after whitespace trimming, and the first occurrence of a letter
- * wins. A max-shifted softmax runs over the letters present; an absent letter
- * gets 0. The result maps every label to a probability.
+ * wins. A max-shifted softmax runs over the offered letters. The result maps
+ * every label to a probability.
+ *
+ * WR-04: a letter that is absent from the list did not make the top-k, so its
+ * probability is at most the smallest listed one, and it is given exactly that
+ * upper bound rather than 0. A missing alternative is therefore treated as low
+ * information, never as proof of certainty: when only the emitted letter is
+ * listed, every letter gets the same bound and the confidence is 1/n, which is
+ * below any usable floor. With a full 20-entry list the bound is tiny and a
+ * confident answer stays confident. This only ever lowers the confidence the
+ * renormalized Tev1 protocol reports. When no offered letter is listed at all,
+ * every label is 0.
  */
 function letterProbabilities(topLogprobs: unknown, labels: readonly string[]): Record<string, number> {
   const valid = new Set(labels);
   const lp = new Map<string, number>();
+  let smallest = Infinity;
   if (Array.isArray(topLogprobs)) {
     for (const e of topLogprobs as unknown[]) {
       if (!isPlainObject(e)) continue;
       const token = e['token'];
       const logprob = e['logprob'];
       if (typeof token !== 'string' || typeof logprob !== 'number' || !Number.isFinite(logprob)) continue;
+      smallest = Math.min(smallest, logprob);
       const t = token.trim();
       if (valid.has(t) && !lp.has(t)) lp.set(t, logprob);
     }
@@ -579,6 +591,7 @@ function letterProbabilities(topLogprobs: unknown, labels: readonly string[]): R
   const out: Record<string, number> = {};
   for (const l of labels) out[l] = 0;
   if (lp.size === 0) return out;
+  for (const l of labels) if (!lp.has(l)) lp.set(l, smallest);
   const max = Math.max(...lp.values());
   let z = 0;
   for (const v of lp.values()) z += Math.exp(v - max);

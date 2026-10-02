@@ -969,6 +969,30 @@ describe('contract edges', () => {
     assert.equal(answers.q.probabilities.b > 0, true);
   });
 
+  test('WR-04: a lone letter in top_logprobs is not inflated to confidence 1; it abstains below the floor', async () => {
+    const lp = (p) => Math.log(p);
+    const cases = [
+      // Only the emitted letter is listed: the other letter gets the same upper bound, so 1/n.
+      [[{ token: 'A', logprob: lp(0.3) }], 0.5],
+      // The reviewer's case: A at 0.30, the rest of the mass on non-letters; B is bounded by the smallest listed (0.1).
+      [[{ token: 'A', logprob: lp(0.3) }, { token: 'The', logprob: lp(0.4) }, { token: 'a', logprob: lp(0.2) }, { token: 'b', logprob: lp(0.1) }], 0.75],
+    ];
+    for (const [top, conf] of cases) {
+      const { answers } = await ask({ q: choiceQ(['a', 'b']) }, { handler: () => ({ ok: true, status: 200, body: completion('A', top) }) });
+      assert.deepEqual(answers.q, { status: 'abstain', reason: 'low-confidence', confidence: conf, below_floor_choice: 'a' }, JSON.stringify(top));
+    }
+  });
+
+  test('WR-04: an absent alternative in a full 20-entry list is bounded by a tiny probability and stays confident', async () => {
+    const top = [{ token: 'A', logprob: Math.log(0.97) }];
+    for (let i = 0; i < 19; i += 1) top.push({ token: `junk${i}`, logprob: Math.log(1e-3) });
+    const { answers } = await ask({ q: choiceQ(['a', 'b']) }, { handler: () => ({ ok: true, status: 200, body: completion('A', top) }) });
+    assert.equal(answers.q.status, 'ok');
+    // 0.97 / (0.97 + 0.001), rounded to 4 places.
+    assert.equal(answers.q.confidence, 0.999);
+    assert.equal(answers.q.probabilities.b, 0.001, 'the absent letter gets its upper bound, not 0');
+  });
+
   test('WR-05: leading whitespace tokens are skipped; the letter token supplies the probabilities', async () => {
     const lp = (p) => Math.log(p);
     const { answers } = await ask({ q: choiceQ(['a', 'b']) }, {
@@ -1083,7 +1107,7 @@ describe('contract edges', () => {
 });
 
 describe('properties', () => {
-  test('letterProbabilities: every p in [0,1], present labels sum to 1, absent labels are 0', () => {
+  test('letterProbabilities: every p in [0,1], all labels sum to 1, an absent label gets the smallest listed probability', () => {
     const arb = fc.integer({ min: 2, max: 24 }).chain((n) => fc.array(
       fc.option(fc.double({ min: -30, max: 0, noNaN: true }), { nil: null }),
       { minLength: n, maxLength: n },
@@ -1095,12 +1119,21 @@ describe('properties', () => {
       const p = mod.letterProbabilities(top, labels);
       assert.equal(Object.keys(p).length, n);
       let sum = 0;
+      const present = [];
       lps.forEach((lp, i) => {
         const v = p[labels[i]];
         assert.ok(v >= 0 && v <= 1, `p ${v}`);
-        if (lp === null) assert.equal(v, 0); else sum += v;
+        sum += v;
+        if (lp !== null) present.push(v);
       });
-      if (top.length > 0) assert.ok(Math.abs(sum - 1) < 1e-9, `sum ${sum}`);
+      if (top.length === 0) {
+        assert.equal(sum, 0, 'no listed letter: every label is 0');
+        return;
+      }
+      assert.ok(Math.abs(sum - 1) < 1e-9, `sum ${sum}`);
+      // An absent letter did not make the top-k list, so its bound is the smallest listed probability.
+      const smallest = Math.min(...present);
+      lps.forEach((lp, i) => { if (lp === null) assert.ok(Math.abs(p[labels[i]] - smallest) < 1e-12, `absent ${labels[i]}`); });
     }));
   });
 
