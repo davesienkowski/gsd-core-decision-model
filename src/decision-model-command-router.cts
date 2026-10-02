@@ -303,18 +303,74 @@ function readItemsJson(flag: string, arg: string, cwd: string, usage: (m: string
 }
 
 type ItemInput = Parameters<EngineModule['decideItemsSync']>[1][number];
+type ItemSpecIn = Extract<ReturnType<EngineModule['validateItemsList']>, { ok: true }>['items'][number];
+
+/** D27: a slice scan reads at most this many bytes of the file looking for the span; a file that needs more abstains context-exceeded. */
+const MAX_SLICE_SCAN_BYTES = 33554432;
+const SLICE_CHUNK_BYTES = 65536;
+
+type SliceRead = { ok: true; bytes: Buffer } | { ok: false; reason: 'invalid-request' | 'context-exceeded' };
+
+/**
+ * D27: read lines [start, end] (1-based, inclusive) of the open file `fd`, raw. A
+ * line is the bytes up to and including its `\n`, so a CRLF stays and a lone `\r`
+ * is not a break; the last line may have no terminator. An `end` past the last
+ * line is clamped; a `start` past it is invalid-request. The scan is bounded: it
+ * stops after `end`, after MAX_SLICE_SCAN_BYTES, and as soon as the kept bytes pass
+ * `cap` (context-exceeded, never truncated).
+ */
+function readLineSlice(fd: number, start: number, end: number, cap: number): SliceRead {
+  const buf = Buffer.alloc(SLICE_CHUNK_BYTES);
+  const kept: Buffer[] = [];
+  let keptBytes = 0;
+  let scanned = 0;
+  let line = 1;
+  let matched = false;
+  for (;;) {
+    const n = fs.readSync(fd, buf, 0, buf.length, null);
+    if (n === 0) break;
+    scanned += n;
+    const chunk = buf.subarray(0, n);
+    let pos = 0;
+    while (pos < n) {
+      const nl = chunk.indexOf(10, pos);
+      const stop = nl === -1 ? n : nl + 1;
+      if (line >= start && line <= end) {
+        matched = true;
+        keptBytes += stop - pos;
+        if (keptBytes > cap) return { ok: false, reason: 'context-exceeded' };
+        kept.push(Buffer.from(chunk.subarray(pos, stop)));
+      }
+      pos = stop;
+      if (nl !== -1) {
+        line += 1;
+        if (line > end) return { ok: true, bytes: Buffer.concat(kept) };
+      }
+    }
+    if (scanned > MAX_SLICE_SCAN_BYTES) return { ok: false, reason: 'context-exceeded' };
+  }
+  return matched ? { ok: true, bytes: Buffer.concat(kept) } : { ok: false, reason: 'invalid-request' };
+}
 
 /**
  * Read one item's state file raw. A path outside the confinement, a missing or
- * unreadable file, or a non-regular file abstains invalid-request; a file over
+ * unreadable file, a non-regular file, or a malformed `lines`/`prefix` (D27)
+ * abstains invalid-request; a file (or, with `lines`, a slice) over
  * MAX_STATE_FILE_BYTES is not read and abstains context-exceeded (never truncated).
  * The file is opened once (O_NOFOLLOW where the platform has it) and sized and read
  * through that descriptor, so the checked file is the file read.
+ *
+ * D27: with `lines` the state is that slice of the file (the whole-file size cap
+ * does not apply, the slice cap does); with `prefix` the state is `prefix + "\n" +`
+ * the body. The byte cap counts the bytes taken from the file, not the prefix.
+ * `sha256` is over the FINAL state bytes (prefix and body), so what is hashed is
+ * what was asked; with neither field it is the file bytes, as in D24.
  */
-function readItemState(spec: { id: string; state_file: string; sha256: boolean }, cwd: string, engine: EngineModule): ItemInput {
+function readItemState(spec: ItemSpecIn, cwd: string, engine: EngineModule): ItemInput {
   const R = engine.ABSTAIN_REASON;
   const item: ItemInput = { id: spec.id };
   if (spec.sha256) item.path_sha256 = sha256Hex(path.resolve(cwd, spec.state_file).split(path.sep).join('/'));
+  if (spec.invalid === true) return { ...item, reason: R.INVALID_REQUEST };
   const contained = confineItemsPath(spec.state_file, cwd);
   if (contained === null) return { ...item, reason: R.INVALID_REQUEST };
   let fd: number | null = null;
@@ -323,16 +379,24 @@ function readItemState(spec: { id: string; state_file: string; sha256: boolean }
     fd = fs.openSync(contained, fs.constants.O_RDONLY | noFollow);
     const st = fs.fstatSync(fd);
     if (!st.isFile()) return { ...item, reason: R.INVALID_REQUEST };
-    if (st.size > engine.MAX_STATE_FILE_BYTES) return { ...item, reason: R.CONTEXT_EXCEEDED };
-    const buf = Buffer.alloc(engine.MAX_STATE_FILE_BYTES + 1);
-    let n = 0;
-    for (;;) {
-      const got = fs.readSync(fd, buf, n, buf.length - n, null);
-      if (got === 0) break;
-      n += got;
-      if (n > engine.MAX_STATE_FILE_BYTES) return { ...item, reason: R.CONTEXT_EXCEEDED };
+    let body: Buffer;
+    if (spec.lines !== undefined) {
+      const slice = readLineSlice(fd, spec.lines[0], spec.lines[1], engine.MAX_STATE_FILE_BYTES);
+      if (!slice.ok) return { ...item, reason: slice.reason === 'context-exceeded' ? R.CONTEXT_EXCEEDED : R.INVALID_REQUEST };
+      body = slice.bytes;
+    } else {
+      if (st.size > engine.MAX_STATE_FILE_BYTES) return { ...item, reason: R.CONTEXT_EXCEEDED };
+      const buf = Buffer.alloc(engine.MAX_STATE_FILE_BYTES + 1);
+      let n = 0;
+      for (;;) {
+        const got = fs.readSync(fd, buf, n, buf.length - n, null);
+        if (got === 0) break;
+        n += got;
+        if (n > engine.MAX_STATE_FILE_BYTES) return { ...item, reason: R.CONTEXT_EXCEEDED };
+      }
+      body = buf.subarray(0, n);
     }
-    const bytes = buf.subarray(0, n);
+    const bytes = spec.prefix === undefined ? body : Buffer.concat([Buffer.from(`${spec.prefix}\n`, 'utf8'), body]);
     if (spec.sha256) item.sha256 = sha256Hex(bytes);
     return { ...item, state: bytes.toString('utf8') };
   } catch {

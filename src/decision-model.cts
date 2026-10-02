@@ -63,6 +63,10 @@ const TOP_LOGPROBS = 20;
 const CHUNK_QUESTIONS = 240;
 /** D24 items mode: a state file larger than this is not read; its item abstains context-exceeded (never truncated). */
 const MAX_STATE_FILE_BYTES = 65536;
+/** D27 items mode: the widest `lines` span an item may ask for. */
+const MAX_SLICE_LINES = 400;
+/** D27 items mode: the longest `prefix`, in characters (code points). */
+const MAX_PREFIX_CHARS = 200;
 
 const KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 /** D21: only a plainly named API-key variable may be read, so GITHUB_TOKEN or AWS_SECRET_ACCESS_KEY can never be named. */
@@ -424,16 +428,25 @@ function validateRequest(raw: unknown): RequestValidation {
 
 // ─── Items mode input (D24) ───────────────────────────────────────────────────
 
-/** One entry of a `decide --items` file. */
+/**
+ * One entry of a `decide --items` file. `lines` (D27) is a 1-based inclusive
+ * [start, end] slice of the state file and `prefix` (D27) a short label prepended
+ * to the state. A malformed `lines` or `prefix` does not fail the list: that item
+ * carries `invalid: true` (and neither field) and abstains invalid-request, so the
+ * other items still run.
+ */
 interface ItemSpec {
   id: string;
   state_file: string;
   sha256: boolean;
+  lines?: [number, number];
+  prefix?: string;
+  invalid?: true;
 }
 
 type ItemsValidation = { ok: true; items: ItemSpec[] } | { ok: false; message: string };
 
-const ITEM_FIELDS: ReadonlySet<string> = new Set(['id', 'state_file', 'sha256']);
+const ITEM_FIELDS: ReadonlySet<string> = new Set(['id', 'state_file', 'sha256', 'lines', 'prefix']);
 /** At most this many entries in one items file. */
 const MAX_ITEMS = 10000;
 
@@ -452,11 +465,29 @@ function validateItemQuestions(raw: unknown): { ok: true; count: number } | { ok
   return { ok: true, count: qs.items.length };
 }
 
+/** D27: a `lines` value is [start, end], two safe integers, start >= 1, end >= start, span <= MAX_SLICE_LINES. */
+function validLinesSpan(v: unknown): v is [number, number] {
+  if (!Array.isArray(v) || v.length !== 2) return false;
+  const [start, end] = v as unknown[];
+  if (typeof start !== 'number' || typeof end !== 'number') return false;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return false;
+  return start >= 1 && end >= start && end - start + 1 <= MAX_SLICE_LINES;
+}
+
+/** D27: a `prefix` is a string of at most MAX_PREFIX_CHARS code points with no NUL (the empty string is allowed). */
+function validPrefix(v: unknown): v is string {
+  if (typeof v !== 'string' || v.includes('\0')) return false;
+  // A string over 2 x the limit in UTF-16 units cannot fit; the code-point count is only taken below that.
+  if (v.length > 2 * MAX_PREFIX_CHARS) return false;
+  return Array.from(v).length <= MAX_PREFIX_CHARS;
+}
+
 /**
  * Validate a `decide --items` list: a non-empty JSON array of
- * {"id", "state_file", "sha256"?} with unique ids under the key rule (never
- * `default`) and no other field. The paths are not checked here; the router
- * confines and reads them.
+ * {"id", "state_file", "sha256"?, "lines"?, "prefix"?} with unique ids under the
+ * key rule (never `default`) and no other field. The paths are not checked here;
+ * the router confines and reads them. A malformed `lines` or `prefix` is a fault
+ * of that item only (D27): it is marked `invalid` and abstains invalid-request.
  */
 function validateItemsList(raw: unknown): ItemsValidation {
   if (!Array.isArray(raw) || raw.length === 0) return { ok: false, message: 'items must be a non-empty JSON array' };
@@ -468,7 +499,7 @@ function validateItemsList(raw: unknown): ItemsValidation {
     const where = `items[${i}]: `;
     if (!isPlainObject(entry)) return { ok: false, message: `${where}entry must be an object` };
     for (const k of Object.keys(entry)) {
-      if (!ITEM_FIELDS.has(k)) return { ok: false, message: `${where}unknown field ${JSON.stringify(k)} (allowed: id, state_file, sha256)` };
+      if (!ITEM_FIELDS.has(k)) return { ok: false, message: `${where}unknown field ${JSON.stringify(k)} (allowed: id, state_file, sha256, lines, prefix)` };
     }
     const id = entry['id'];
     if (typeof id !== 'string' || !isValidKey(id) || id === 'default') {
@@ -480,7 +511,17 @@ function validateItemsList(raw: unknown): ItemsValidation {
     if (typeof stateFile !== 'string' || stateFile.length === 0) return { ok: false, message: `${where}state_file must be a non-empty string` };
     const sha = entry['sha256'];
     if (sha !== undefined && typeof sha !== 'boolean') return { ok: false, message: `${where}sha256 must be a boolean` };
-    items.push({ id, state_file: stateFile, sha256: sha === true });
+    const spec: ItemSpec = { id, state_file: stateFile, sha256: sha === true };
+    const lines = entry['lines'];
+    const prefix = entry['prefix'];
+    const linesOk = !hasOwn(entry, 'lines') || validLinesSpan(lines);
+    const prefixOk = !hasOwn(entry, 'prefix') || validPrefix(prefix);
+    if (!linesOk || !prefixOk) spec.invalid = true;
+    else {
+      if (validLinesSpan(lines)) spec.lines = [lines[0], lines[1]];
+      if (typeof prefix === 'string') spec.prefix = prefix;
+    }
+    items.push(spec);
   }
   return { ok: true, items };
 }
@@ -1768,6 +1809,7 @@ export = {
   validateItemQuestions,
   CHUNK_QUESTIONS,
   MAX_STATE_FILE_BYTES,
+  MAX_SLICE_LINES,
   validateDecisionConfig,
   resolveDecisionConfig,
   isLoopbackUrl,
