@@ -754,7 +754,7 @@ At investigation decision points, apply structured reasoning:
 **Phase 0: Check knowledge base**
 - Query MemPalace semantically with the current symptoms (top-k meaning-similar prior resolutions); fall back to reading `.planning/debug/knowledge-base.md` and keyword overlap when MemPalace is absent
 <!-- decision-model: kb-recall -->
-- **Decision model (optional):** only when MemPalace is absent, run `gsd_run decide --status`; only if it prints `"active": true`, rank the knowledge-base entries in ONE call per `~/.claude/gsd-core/references/decision-model-calls.md` (### KB recall) and add its picks as hypotheses after the keyword matches (Decision-model candidates in the semantic-recall reference); keyword matches stay and are tested first. Abstain, error, empty knowledge base or inactive: keyword matches only.
+- **Decision model (optional):** only on the keyword-fallback path (MemPalace absent or failing), run `gsd_run decide --status`; only if it prints `"active": true`, rank the knowledge-base entries in ONE call per `~/.claude/gsd-core/references/decision-model-calls.md` (### KB recall) and add its picks as hypotheses after the keyword matches (Decision-model candidates in the semantic-recall reference); keyword matches stay and are tested first. Abstain, error, empty knowledge base or inactive: keyword matches only.
 <!-- /decision-model -->
 - If match found:
   - Note in Current Focus: `known_pattern_candidate: "{matched slug} — {description}"`

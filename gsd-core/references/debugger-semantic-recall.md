@@ -72,9 +72,9 @@ field for **2+ token overlap (case-insensitive)**. The fallback is logged
 (Kernighan — never a silent skip), and `knowledge-base.md` continues to be
 written regardless, so no session is lost to a missing palace.
 
-## Decision-model candidates (optional, MemPalace absent)
+## Decision-model candidates (optional, keyword-fallback path)
 
-Runs only on the keyword-fallback path, and only when `gsd_run decide --status` prints `"active": true`. Define `gsd_run` with your launcher preamble at the start of the same Bash call, then make one call per `~/.claude/gsd-core/references/decision-model-calls.md` (### KB recall). Every `ok` `same_cause` answer is a candidate.
+Runs only on the keyword-fallback path (MemPalace absent or failing), and only when `gsd_run decide --status` prints `"active": true`. Define `gsd_run` with your launcher preamble at the start of the same Bash call, then make one call per `~/.claude/gsd-core/references/decision-model-calls.md` (### KB recall). Every `ok` `same_cause` answer is a candidate.
 
 Keyword matches are never removed and are tested first. Model-only candidates follow, by confidence descending, ties in file order. An entry found both ways is listed once, naming both sources. Each candidate carries its `decided-by:` line. A candidate is a hypothesis to test, never a diagnosis. Abstain, error or no `ok` answer: log one line and change nothing.
 

@@ -284,7 +284,7 @@ Use: read the answers through the reducer. With the Write tool, write `profile-l
 
 ### KB recall
 
-Site `kb-recall`. Host: gsd-debugger, Phase 0, only when MemPalace is absent; an empty or missing `.planning/debug/knowledge-base.md` means no call. One item per entry, newest first, at most 40 (`order_check` doubles the calls), `k` its number from 1 in that order: `{"id": "kb<k>", "state_file": ".planning/debug/knowledge-base.md", "lines": [start, end], "prefix": "symptoms: <summary>"}`. `lines` runs from the entry's `## ` heading to the line before the next heading or the file end; `<summary>` is your own one-line summary of the current symptoms, at most 150 characters, in the prefix character rule (Calling from an agent), never copied from the report or the file. Question key `match`, type `choice`, `order_check` true (a position-biased pick would put a wrong hypothesis first):
+Site `kb-recall`. Host: gsd-debugger, Phase 0, only on the keyword-fallback path (MemPalace absent or failing); an empty or missing `.planning/debug/knowledge-base.md` means no call. One item per entry, newest first, at most 40 (`order_check` doubles the calls), `k` its number from 1 in that order: `{"id": "kb<k>", "state_file": ".planning/debug/knowledge-base.md", "lines": [start, end], "prefix": "symptoms: <summary>"}`. `lines` runs from the entry's `## ` heading to the line before the next heading or the file end; `<summary>` is your own one-line summary of the current symptoms, at most 150 characters, in the prefix character rule (Calling from an agent), never copied from the report or the file. Question key `match`, type `choice`, `order_check` true (a position-biased pick would put a wrong hypothesis first):
 
 <!-- dm:questions kb-recall -->
 ```json

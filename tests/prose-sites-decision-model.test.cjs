@@ -315,7 +315,8 @@ const SITES = [
       'fall back to reading `.planning/debug/knowledge-base.md` and keyword overlap when MemPalace is absent',
       '  - Note in Current Focus: `known_pattern_candidate: "{matched slug} — {description}"`',
     ],
-    must: ['hypotheses', 'keyword matches stay', 'tested first', 'KB recall'],
+    // IN-05: the gate is the keyword-fallback path, which also runs when a MemPalace query fails.
+    must: ['hypotheses', 'keyword matches stay', 'tested first', 'KB recall', 'keyword-fallback path (MemPalace absent or failing)'],
   },
   {
     file: 'gsd-core/workflows/profile-user.md',
@@ -593,6 +594,13 @@ describe('decision-model-calls.md reference', () => {
       const granted = tools[1].split(',').map((x) => x.trim());
       assert.ok(granted.includes('Write') && granted.includes('Bash'), `${site.file} hosts a block but lacks Write or Bash (D26)`);
     }
+  });
+
+  test('IN-05: the KB recall gate is the keyword-fallback path in the reference and the semantic-recall reference', () => {
+    assert.ok(subsection(readReference(), 'KB recall').includes('keyword-fallback path (MemPalace absent or failing)'), 'KB recall gate');
+    const recall = read('gsd-core/references/debugger-semantic-recall.md');
+    assert.ok(recall.split('\n').includes('## Decision-model candidates (optional, keyword-fallback path)'), 'semantic-recall heading');
+    assert.ok(!/only when MemPalace is absent/.test(subsection(readReference(), 'KB recall')), 'no narrower gate left');
   });
 
   test('IN-02: Calling from an agent names every id prefix and every agent that has no gsd_run of its own', () => {
