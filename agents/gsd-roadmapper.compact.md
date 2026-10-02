@@ -82,10 +82,6 @@ For each phase: "What must be TRUE for users when this phase completes?"
 
 **Step 2 — Derive Observable Truths (2-5 per phase):** what users can observe/do when the phase completes, e.g. for "Users can securely access their accounts": create account with email/password; log in and stay logged in across sessions; log out from any page; reset forgotten password. **Test:** each truth verifiable by a human using the application.
 
-<!-- decision-model: criterion-flag -->
-**Decision model (optional):** if `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`) prints `"active": true`, flag criteria per `~/.claude/gsd-core/references/decision-model-calls.md` (Criterion flag); a flag only prompts a re-check of the Test, wording stays yours.
-<!-- /decision-model -->
-
 **Step 3 — Cross-Check Against Requirements:** each success criterion — does ≥1 requirement support it? If not → gap. Each requirement mapped to this phase — does it contribute to ≥1 criterion? If not → question if it belongs here.
 
 **Step 4 — Resolve Gaps:** criterion with no requirement → add requirement to REQUIREMENTS.md, or mark out of scope for this phase. Requirement supporting no criterion → question if it belongs here (maybe v2, maybe different phase).
@@ -311,6 +307,10 @@ Extract suggested phase structure from research/SUMMARY.md "Implications for Roa
 
 ## Step 5: Derive Success Criteria
 1. State phase goal (outcome, not task) 2. Derive 2-5 observable truths (user perspective) 3. Cross-check against requirements 4. Flag gaps
+
+<!-- decision-model: criterion-flag -->
+**Decision model (optional):** once, after this step for every phase: if `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`) prints `"active": true`, flag criteria per `~/.claude/gsd-core/references/decision-model-calls.md` (Criterion flag); a flag only prompts a re-check of the Step 2 Test, wording stays yours.
+<!-- /decision-model -->
 
 ## Step 6: Validate Coverage
 Verify 100% requirement mapping — no orphans, no duplicates. Gaps found → include in draft for user decision.

@@ -276,7 +276,7 @@ const SITES = [
     refSection: 'Criterion flag',
     maxBytes: 500,
     keep: ['**Test:** Each truth should be verifiable by a human using the application.', '4. Flag any gaps'],
-    must: ['wording stays', 'Criterion flag', 'gsd-run-resolver.md'],
+    must: ['wording stays', 'Criterion flag', 'gsd-run-resolver.md', 'for every phase'],
   },
   {
     file: 'agents/gsd-roadmapper.compact.md',
@@ -285,7 +285,7 @@ const SITES = [
     refSection: 'Criterion flag',
     maxBytes: 420,
     keep: ['**Test:** each truth verifiable by a human using the application.', '4. Flag gaps'],
-    must: ['wording stays', 'Criterion flag', 'gsd-run-resolver.md'],
+    must: ['wording stays', 'Criterion flag', 'gsd-run-resolver.md', 'for every phase'],
   },
   {
     file: 'agents/gsd-doc-verifier.md',
@@ -588,6 +588,20 @@ describe('decision-model-calls.md reference', () => {
       assert.ok(tools, `${site.file} has a tools line`);
       const granted = tools[1].split(',').map((x) => x.trim());
       assert.ok(granted.includes('Write') && granted.includes('Bash'), `${site.file} hosts a block but lacks Write or Bash (D26)`);
+    }
+  });
+
+  test('WR-04: the roadmapper criterion flag runs once, inside Step 5 of the execution flow, not in the per-phase method', () => {
+    for (const rel of ['agents/gsd-roadmapper.md', 'agents/gsd-roadmapper.compact.md']) {
+      const lines = read(rel).split('\n');
+      const open = lines.indexOf('<!-- decision-model: criterion-flag -->');
+      assert.notEqual(open, -1, rel);
+      const step5 = lines.indexOf('## Step 5: Derive Success Criteria');
+      const step6 = lines.indexOf('## Step 6: Validate Coverage');
+      assert.ok(step5 !== -1 && step6 > step5, `${rel} has Steps 5 and 6`);
+      assert.ok(open > step5 && open < step6, `${rel}: the block (line ${open + 1}) must sit in Step 5 (lines ${step5 + 1}-${step6 + 1})`);
+      const perPhase = lines.indexOf('</goal_backward_phases>');
+      assert.ok(perPhase !== -1 && open > perPhase, `${rel}: the block is outside the per-phase method`);
     }
   });
 
