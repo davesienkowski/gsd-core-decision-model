@@ -485,4 +485,25 @@ describe('gsd-tools decide (full contract)', () => {
     const noConsent = await runDecide(t, ['--request', file], { cwd: project });
     assert.deepEqual(JSON.parse(noConsent.stdout).results[0].answers.kind, { status: 'abstain', reason: 'egress-not-consented' });
   });
+
+  test('WR-03: a directory or oversized --request path gives exactly one usage error', async (t) => {
+    const project = makeProject(t, {});
+    const res = await runDecide(t, ['--request', '.'], { cwd: project, env: { GSD_JSON_ERRORS: '1' } });
+    assert.notEqual(res.code, 0);
+    const lines = res.stderr.split('\n').filter((l) => l.trim().startsWith('{'));
+    assert.equal(lines.length, 1, `exactly one JSON error: ${res.stderr}`);
+    assert.equal(JSON.parse(lines[0]).reason, 'usage');
+
+    // In process: error() throws (ADR-3889 ExitError), so a second call would be the bug.
+    const { routeDecideCommand } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'decision-model-command-router.cjs'));
+    const big = path.join(project, 'big.json');
+    fs.writeFileSync(big, ' '.repeat(4194305));
+    for (const arg of ['.', big, path.join(project, 'missing.json')]) {
+      const calls = [];
+      const error = (message, reason) => { calls.push({ message, reason }); throw new Error('exit'); };
+      assert.throws(() => routeDecideCommand({ args: ['decide', '--request', arg], cwd: project, raw: false, error }), /exit/);
+      assert.equal(calls.length, 1, `${arg}: ${JSON.stringify(calls)}`);
+      assert.equal(calls[0].reason, 'usage');
+    }
+  });
 });

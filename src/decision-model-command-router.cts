@@ -106,15 +106,28 @@ function routeDecideCommand({ args, cwd, raw, error, _engine, _readStdin, _core 
       usage('decide --request must name a file inside the project root');
       return undefined;
     }
+    // usage() throws an ExitError (ADR-3889), so it is never called inside a try:
+    // a catch there would swallow it and print a second, bogus error.
+    let st: fs.Stats;
     try {
-      const st = fs.statSync(contained);
-      if (!st.isFile() || st.size > MAX_REQUEST_BYTES) {
-        usage(`decide --request must be a regular file of at most ${MAX_REQUEST_BYTES} bytes`);
-        return undefined;
-      }
-      text = fs.readFileSync(contained, 'utf8');
+      st = fs.statSync(contained);
     } catch (e) {
       usage(`decide could not read the request file: ${e instanceof Error ? e.message : String(e)}`);
+      return undefined;
+    }
+    if (!st.isFile() || st.size > MAX_REQUEST_BYTES) {
+      usage(`decide --request must be a regular file of at most ${MAX_REQUEST_BYTES} bytes`);
+      return undefined;
+    }
+    let readError: string | null = null;
+    try {
+      text = fs.readFileSync(contained, 'utf8');
+    } catch (e) {
+      readError = e instanceof Error ? e.message : String(e);
+      text = '';
+    }
+    if (readError !== null) {
+      usage(`decide could not read the request file: ${readError}`);
       return undefined;
     }
   }
