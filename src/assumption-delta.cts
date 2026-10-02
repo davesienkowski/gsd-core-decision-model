@@ -26,6 +26,16 @@
  *   detectAssumptionDelta(text, terms?) -> { detected, signals, terms }
  *   DEFAULT_ASSUMPTION_DELTA_TERMS
  *
+ * Decision-model fallthrough (quick 261001-wzs, D11 site #1):
+ *   detectAssumptionDeltaWithModel(text, terms?, opts?) wraps the detector. It is wired ONLY at the
+ *   `query assumption-delta scan` handler; the bare stdin CLI below keeps its deterministic 0/1
+ *   exit verdict (ADR-3889). When the regex detected something, or the capability is inactive, or
+ *   the model abstains, the result is exactly detectAssumptionDelta's. When the regex found
+ *   nothing and the model answers (status ok) that the scope turns a single/required/derived
+ *   thing into a plural/optional/chosen one, one signal tagged `proposed_by: decision-model` with
+ *   a `decided_by` line is returned and `detected` is true. The checkpoint stays advisory: the
+ *   planner still asks the user its one question, so a human confirms.
+ *
  * CLI (ADR-3889 Phase 3, #3907):
  *   echo "$PHASE_SECTION" | node gsd-core/bin/lib/assumption-delta.cjs [--json]
  *     exit 0 = signal detected, 1 = none (real input, examined, no signal),
@@ -37,6 +47,15 @@
 
 import { stripFencedCode } from './markdown-sectionizer.cjs';
 import { escapeRegex } from './pattern.cjs';
+import {
+  type DecideOpts,
+  type DecisionQuestion,
+  answersFor,
+  answerOf,
+  okChoice,
+  decidedBy,
+  resolveSiteDecide,
+} from './decision-model-fallthrough.cjs';
 
 export type AssumptionDeltaKind = 'pluralization' | 'optional' | 'chosen';
 
@@ -44,6 +63,10 @@ export interface AssumptionDeltaSignal {
   kind: AssumptionDeltaKind;
   term: string;
   snippet: string;
+  /** Present only on a signal proposed by the optional decision model (D14 provenance). */
+  proposed_by?: 'decision-model';
+  /** The locked `decided-by: decision-model (...)` line; present with `proposed_by`. */
+  decided_by?: string;
 }
 
 export interface AssumptionDeltaTermSet {
@@ -211,6 +234,57 @@ export function detectAssumptionDelta(
   }
 
   return { detected: signals.length > 0, signals, terms: effective };
+}
+
+/**
+ * The one fixed choice question for the fallthrough. The instructions are a module constant; the
+ * untrusted phase prose goes only in the request `state` (ADR-1577).
+ */
+export const DELTA_QUESTION: Readonly<DecisionQuestion> = Object.freeze({
+  type: 'choice' as const,
+  instructions: 'Does this phase scope turn something that was single, required or derived into something plural, optional or chosen? Pick the one option that fits best.',
+  criteria: Object.freeze({
+    pluralization: 'a second or additional instance of something that used to be single (platform, auth method, tenant, region, source of truth)',
+    optional: 'something that used to be required becomes optional',
+    chosen: 'something that used to be derived or constant becomes chosen, selectable or configurable',
+    none: 'none of these',
+  }),
+});
+
+const MODEL_DELTA_KINDS: ReadonlySet<string> = new Set<AssumptionDeltaKind>(['pluralization', 'optional', 'chosen']);
+
+/**
+ * `detectAssumptionDelta` plus the optional decision-model fallthrough (D11 site #1, D14, D18).
+ * Returns the deterministic result untouched when it already detected, when `text` is not a string
+ * or is blank after fence-stripping, when the capability is inactive, or on any non-ok answer.
+ * Otherwise makes ONE decide call (id d0, state = the fence-stripped text the regex scanned).
+ */
+export function detectAssumptionDeltaWithModel(
+  text: unknown,
+  terms?: Partial<AssumptionDeltaTermSet>,
+  opts: DecideOpts = {},
+): AssumptionDeltaResult {
+  const base = detectAssumptionDelta(text, terms);
+  if (base.detected || typeof text !== 'string') return base;
+  const stripped = stripFencedCode(text.replace(/\r\n/g, '\n')).text;
+  if (stripped.trim().length === 0) return base;
+  const decide = resolveSiteDecide(opts);
+  if (decide === null) return base;
+  const response = decide({ requests: [{ id: 'd0', state: stripped, questions: { delta: DELTA_QUESTION } }] });
+  const answer = answerOf(answersFor(response, 'd0'), 'delta');
+  const choice = okChoice(answer);
+  if (choice === null || !MODEL_DELTA_KINDS.has(choice)) return base;
+  return {
+    detected: true,
+    signals: [{
+      kind: choice as AssumptionDeltaKind,
+      term: '',
+      snippet: '',
+      proposed_by: 'decision-model',
+      decided_by: decidedBy(answer, response),
+    }],
+    terms: base.terms,
+  };
 }
 
 // ── CLI entry point ──────────────────────────────────────────────────────────

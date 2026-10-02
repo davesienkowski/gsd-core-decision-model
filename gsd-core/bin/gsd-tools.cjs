@@ -310,8 +310,8 @@ const roadmap = require('./lib/roadmap.cjs');
 // #3024: resolve skills root for the sync-skills workflow (install.js is not
 // shipped in installed trees; gsd-tools IS shipped, so the workflow calls this).
 const { getGlobalSkillsBase, isRegisteredRuntimeId } = require('./lib/runtime-homes.cjs');
-// #1561 — assumption-delta advisory checkpoint detector (pure function).
-const { detectAssumptionDelta } = require('./lib/assumption-delta.cjs');
+// #1561 — assumption-delta advisory checkpoint detector (pure; optional decision-model fallthrough, D11).
+const { detectAssumptionDeltaWithModel } = require('./lib/assumption-delta.cjs');
 const verify = require('./lib/verify.cjs');
 const config = require('./lib/config.cjs');
 const estimateCli = require('./lib/estimate-cli.cjs');
@@ -2964,7 +2964,9 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   function routeAssumptionDelta({ args, cwd, raw, error }) {
     // #1561 — advisory architecture checkpoint. `scan <phase>` reads the
           // phase section via the same resolver as roadmap.get-phase and runs the
-          // deterministic detectAssumptionDelta, emitting the typed IR as JSON.
+          // deterministic detectAssumptionDelta, emitting the typed IR as JSON. The scan
+          // stays deterministic unless the decision-model capability is active and the
+          // regex found nothing (detectAssumptionDeltaWithModel, D11 site #1).
           const sub = args[1];
           if (sub === 'scan') {
             const phaseNum = args[2];
@@ -3001,7 +3003,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
               output({ skipped: true, reason: 'phase_unresolved' }, raw);
               return;
             }
-            const result = detectAssumptionDelta(section, termsOverride);
+            const result = detectAssumptionDeltaWithModel(section, termsOverride, { cwd });
             output(result, raw);
             return;
           }

@@ -280,6 +280,7 @@ module.exports = {
   "tests/test-gate-watch-mode.test.cjs",
   "tests/todos-workstream-scope.test.cjs",
   "tests/uat-complete-session.test.cjs",
+  "tests/ui-consideration-probe.test.cjs",
   "tests/ui-interaction-capture.test.cjs",
   "tests/undo-commit-selection-4465.test.cjs",
   "tests/undo-commit-selection.test.cjs",

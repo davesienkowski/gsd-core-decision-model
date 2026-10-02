@@ -316,3 +316,60 @@ describe('query assumption-delta scan — unresolved phase reports skipped (#390
     assert.strictEqual(json.reason, 'phase_unresolved');
   });
 });
+
+// 261001-o30 D11 site #1: the scan handler is the one gsd-tools entry that may consult the
+// optional decision model. With the capability off, or on any abstain/failure, the payload is
+// byte-identical to the deterministic detector's.
+describe('query assumption-delta scan — decision-model fallthrough stays silent (261001-o30 D11)', () => {
+  const dirs = [];
+  afterEach(() => { while (dirs.length) cleanup(dirs.pop()); });
+
+  const NO_CUE = '# Roadmap\n\n### Phase 01: Cleanup\n\nRefactor the internal state machine.\n';
+
+  function scanIn(decisionModel) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-adelta-dm-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-adelta-home-'));
+    dirs.push(dir, home);
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ decision_model: decisionModel }));
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), NO_CUE, 'utf8');
+    try {
+      const stdout = execFileSync(process.execPath, [TOOLS_PATH, 'query', 'assumption-delta', 'scan', '01', '--json'], {
+        cwd: dir,
+        encoding: 'utf-8',
+        env: { ...process.env, ...TEST_ENV_BASE, HOME: home, USERPROFILE: home, GSD_HOME: home },
+        timeout: LOOP_HOOK_POINT_CLI_TIMEOUT_MS,
+      });
+      return { ok: true, stdout: stdout.trim() };
+    } catch (err) {
+      return { ok: false, stdout: err.stdout?.toString().trim() || '', stderr: err.stderr?.toString() || err.message };
+    }
+  }
+
+  async function closedPort() {
+    const net = require('node:net');
+    const srv = net.createServer();
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const { port } = srv.address();
+    await new Promise((r) => srv.close(r));
+    return port;
+  }
+
+  test('decision_model disabled prints exactly detectAssumptionDelta\'s JSON', () => {
+    const { detectAssumptionDelta } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'assumption-delta.cjs'));
+    const r = scanIn({ enabled: false });
+    assert.ok(r.ok, r.stderr);
+    const parsed = JSON.parse(r.stdout);
+    assert.strictEqual(parsed.detected, false);
+    assert.deepStrictEqual(parsed, detectAssumptionDelta('Refactor the internal state machine.'));
+  });
+
+  test('decision_model enabled against an unreachable backend prints the identical payload', async () => {
+    const off = scanIn({ enabled: false });
+    const port = await closedPort();
+    const on = scanIn({ enabled: true, model: 'fake-model', base_url: `http://127.0.0.1:${port}`, timeout_ms: 2000 });
+    assert.ok(off.ok, off.stderr);
+    assert.ok(on.ok, on.stderr);
+    assert.strictEqual(on.stdout, off.stdout);
+  });
+});
