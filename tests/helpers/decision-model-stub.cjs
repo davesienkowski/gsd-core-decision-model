@@ -15,6 +15,10 @@
  * An unknown key answers 500.
  */
 const http = require('node:http');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFile } = require('node:child_process');
 
 function letterCompletion(letter, labels) {
   const top = [{ token: letter, logprob: -0.01 }];
@@ -69,4 +73,56 @@ async function startLetterStub(pick) {
   };
 }
 
-module.exports = { startLetterStub, letterCompletion };
+/**
+ * A temp project (with `.planning/config.json` = `config`) and a temp HOME / GSD_HOME. `files`
+ * maps project-relative paths to text. Returns `{ dir, home, env, cleanup }`.
+ */
+function makeDecisionProject(config, files = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-dm-site-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-dm-site-home-'));
+  fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify(config));
+  for (const [rel, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), text);
+  }
+  const env = { ...process.env, HOME: home, USERPROFILE: home, GSD_HOME: home };
+  for (const k of ['GSD_WORKSTREAM', 'GSD_PROJECT', 'GSD_SESSION_KEY', 'GSD_DECISION_MODEL_SITE_BUDGET_MS']) delete env[k];
+  const cleanup = () => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  };
+  return { dir, home, env, cleanup };
+}
+
+/**
+ * Run `node <argv...>` WITHOUT blocking this process's event loop (the stub answers from it).
+ * Resolves `{ code, signal, stdout, stderr }`. `input` is written to stdin when given.
+ */
+function runNodeAsync(argv, { cwd, env, timeout, input }) {
+  return new Promise((resolve) => {
+    const child = execFile(process.execPath, argv, { cwd, env, timeout, killSignal: 'SIGKILL', encoding: 'utf8' },
+      (err, stdout, stderr) => resolve({
+        code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+        signal: err ? err.signal : null,
+        stdout,
+        stderr,
+      }));
+    child.stdin.end(input === undefined ? '' : input);
+  });
+}
+
+/** Every file under `root`, as sorted root-relative POSIX paths. */
+function listFiles(root) {
+  const out = [];
+  const walk = (rel) => {
+    for (const entry of fs.readdirSync(path.join(root, rel), { withFileTypes: true })) {
+      const next = rel === '' ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(next); else out.push(next);
+    }
+  };
+  walk('');
+  return out.sort();
+}
+
+module.exports = { startLetterStub, letterCompletion, makeDecisionProject, runNodeAsync, listFiles };

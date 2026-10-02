@@ -15,7 +15,6 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const net = require('node:net');
 const { cleanup, TEST_ENV_BASE } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
@@ -117,13 +116,10 @@ describe('agent-command-router: decision-model fallthrough (261001-o30 D11 site 
     assert.deepEqual(router.classifyAgentFailureWithModel(UNKNOWN_BODY, { decide: null }), { class: 'unknown-failure' });
   });
 
-  test('exactly one decide call per classification, and no trace file is written', (t) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-agent-priv-'));
-    t.after(() => cleanup(dir));
+  test('exactly one decide call per classification', () => {
     const decide = fakeDecide({ status: 'ok', choice: 'quota-exceeded', confidence: 0.93 });
-    router.classifyAgentFailureWithModel(UNKNOWN_BODY, { cwd: dir, decide });
+    router.classifyAgentFailureWithModel(UNKNOWN_BODY, { decide });
     assert.equal(decide.calls.length, 1);
-    assert.deepEqual(fs.readdirSync(dir), []);
   });
 
   test('FAILURE_QUESTION is a frozen choice with the two fixed criteria', () => {
@@ -134,16 +130,6 @@ describe('agent-command-router: decision-model fallthrough (261001-o30 D11 site 
 });
 
 describe('agent-command-router: query agent.classify-failure stays deterministic off or unreachable (261001-o30 D11)', () => {
-  function closedPort() {
-    return new Promise((resolve) => {
-      const srv = net.createServer();
-      srv.listen(0, '127.0.0.1', () => {
-        const { port } = srv.address();
-        srv.close(() => resolve(port));
-      });
-    });
-  }
-
   function classifyIn(t, decisionModel, body) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-agent-dm-'));
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-agent-home-'));
@@ -165,13 +151,37 @@ describe('agent-command-router: query agent.classify-failure stays deterministic
     assert.equal(fs.existsSync(path.join(dir, '.gsd-trace.jsonl')), false);
   });
 
-  test('decision_model enabled against an unreachable backend prints the identical payload', async (t) => {
+  test('decision_model enabled against a failing backend prints the identical payload, and the backend was reached', async (t) => {
+    const { startLetterStub, makeDecisionProject, runNodeAsync } = require('./helpers/decision-model-stub.cjs');
     const off = classifyIn(t, { enabled: false }, UNKNOWN_BODY);
-    const port = await closedPort();
-    const on = classifyIn(t, { enabled: true, model: 'fake-model', base_url: `http://127.0.0.1:${port}`, timeout_ms: 2000 }, UNKNOWN_BODY);
-    assert.equal(on.r.exitCode, 0, on.r.stderr);
-    assert.equal(on.r.stdout, off.r.stdout);
-    assert.deepEqual(JSON.parse(on.r.stdout), { class: 'unknown-failure' });
+    const stub = await startLetterStub(() => ({ status: 500, body: 'no' }));
+    t.after(() => stub.close());
+    const p = makeDecisionProject({ decision_model: { enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 2000 } });
+    t.after(() => p.cleanup());
+    const on = await runNodeAsync([TOOLS, 'query', 'agent.classify-failure', '--', UNKNOWN_BODY],
+      { cwd: p.dir, env: { ...p.env, ...TEST_ENV_BASE }, timeout: PROBE_TIMEOUT_MS });
+    assert.equal(on.code, 0, on.stderr);
+    assert.equal(stub.hits, 1, 'the enabled run reached the backend, so the model path is wired through decideSync');
+    assert.equal(on.stdout, off.r.stdout);
+    assert.deepEqual(JSON.parse(on.stdout), { class: 'unknown-failure' });
+  });
+
+  test('privacy (real path): an answered classification writes no .gsd-trace.jsonl, and no file outside a configured log_path', async (t) => {
+    const { startLetterStub, makeDecisionProject, runNodeAsync, listFiles } = require('./helpers/decision-model-stub.cjs');
+    const stub = await startLetterStub(() => 'quota-exceeded');
+    t.after(() => stub.close());
+    for (const logPath of [undefined, 'logs/decisions.jsonl']) {
+      const dm = { enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 5000, ...(logPath ? { log_path: logPath } : {}) };
+      const p = makeDecisionProject({ decision_model: dm });
+      t.after(() => p.cleanup());
+      const before = { dir: listFiles(p.dir), home: listFiles(p.home) };
+      const r = await runNodeAsync([TOOLS, 'query', 'agent.classify-failure', '--', UNKNOWN_BODY],
+        { cwd: p.dir, env: { ...p.env, ...TEST_ENV_BASE }, timeout: PROBE_TIMEOUT_MS });
+      assert.equal(r.code, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).model_suggestion.class, 'quota-exceeded', 'the answer came back through the real engine');
+      assert.deepEqual(listFiles(p.dir).filter((f) => !before.dir.includes(f)), logPath ? [logPath] : [], 'no trace file; only the opted-in log');
+      assert.deepEqual(listFiles(p.home), before.home, 'nothing is written under HOME / GSD_HOME');
+    }
   });
 
   test('WR-03: with provider_escalation configured, a model quota answer still takes the unknown path (no escalation)', async (t) => {

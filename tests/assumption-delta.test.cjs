@@ -509,9 +509,18 @@ describe('detectAssumptionDeltaWithModel — decision-model fallthrough (261001-
     assert.deepStrictEqual(Object.keys(DELTA_QUESTION.criteria), ['pluralization', 'optional', 'chosen', 'none']);
   });
 
-  test('the bare stdin CLI is unchanged: it never consults the model (exit 1 on a regex miss)', () => {
-    const r = spawnSync(process.execPath, [MODULE_PATH, '--json'], { input: SPANISH, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS });
-    assert.equal(r.status, 1, 'exit 1 = examined, no signal (ADR-3889)');
-    assert.deepStrictEqual(JSON.parse(r.stdout), detectAssumptionDelta(SPANISH));
+  test('the bare stdin CLI is unchanged: it never consults the model, even with the capability enabled (exit 1 on a regex miss)', async () => {
+    const { startLetterStub, makeDecisionProject, runNodeAsync } = require('./helpers/decision-model-stub.cjs');
+    const stub = await startLetterStub(() => 'optional');
+    const p = makeDecisionProject({ decision_model: { enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 2000 } });
+    try {
+      const r = await runNodeAsync([MODULE_PATH, '--json'], { cwd: p.dir, env: p.env, timeout: PROBE_TIMEOUT_MS, input: SPANISH });
+      assert.equal(r.code, 1, 'exit 1 = examined, no signal (ADR-3889)');
+      assert.deepStrictEqual(JSON.parse(r.stdout), detectAssumptionDelta(SPANISH));
+      assert.equal(stub.hits, 0, 'an active capability and a reachable backend are never consulted by the stdin CLI');
+    } finally {
+      await stub.close();
+      p.cleanup();
+    }
   });
 });

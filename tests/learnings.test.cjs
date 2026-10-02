@@ -1102,16 +1102,8 @@ describe('planSameAsDecisions (pure planner)', () => {
 });
 
 describe('learnings copy CLI stays deterministic off or unreachable (261001-o30 D11 site #9)', () => {
-  const net = require('node:net');
   const cleanups = [];
   afterEach(() => { while (cleanups.length) cleanup(cleanups.pop()); });
-
-  function closedPort() {
-    return new Promise((resolve) => {
-      const srv = net.createServer();
-      srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
-    });
-  }
 
   function copyIn(decisionModel, seedStore) {
     const dir = createTempProject();
@@ -1166,10 +1158,44 @@ describe('learnings copy CLI stays deterministic off or unreachable (261001-o30 
     assert.strictEqual(fs.existsSync(path.join(dir, '.gsd-trace.jsonl')), false);
   });
 
-  test('decision_model enabled against an unreachable backend prints the identical payload', async () => {
-    const port = await closedPort();
-    const { res } = copyIn({ enabled: true, model: 'fake-model', base_url: `http://127.0.0.1:${port}`, timeout_ms: 2000 }, true);
-    assert.strictEqual(res.success, true, res.error);
-    assert.deepStrictEqual(JSON.parse(res.output), { total: 1, created: 1, skipped: 0 });
+  /** `learnings copy` against a stub, with a near-miss pair so the model is asked; async so the stub can answer. */
+  async function copyWithStub(pick) {
+    const { startLetterStub, makeDecisionProject, runNodeAsync } = require('./helpers/decision-model-stub.cjs');
+    const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+    const { TEST_ENV_BASE } = require('./helpers.cjs');
+    const stub = await startLetterStub(pick);
+    const p = makeDecisionProject(
+      { decision_model: { enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 2000 } },
+      { '.planning/LEARNINGS.md': '# L\n\n## Lessons\n\n### Network retries\nWhen a remote request fails, wait longer before each new attempt and add randomness\n' },
+    );
+    try {
+      learningsWrite({
+        source_project: 'other',
+        context: 'Retry policy for flaky network calls',
+        learning: 'Retry network calls with exponential backoff and jitter',
+      }, { storeDir: path.join(p.home, '.gsd', 'knowledge') });
+      const r = await runNodeAsync([path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs'), 'learnings', 'copy'],
+        { cwd: p.dir, env: { ...p.env, ...TEST_ENV_BASE }, timeout: PROBE_TIMEOUT_MS });
+      return { ...r, hits: stub.hits };
+    } finally {
+      await stub.close();
+      p.cleanup();
+    }
+  }
+
+  test('decision_model enabled against a failing backend prints the identical payload, and the backend was reached', async () => {
+    const r = await copyWithStub(() => ({ status: 500, body: 'no' }));
+    assert.strictEqual(r.code, 0, r.stderr);
+    assert.strictEqual(r.hits, 1, 'the enabled run reached the backend, so learnings copy is wired to the model path');
+    assert.deepStrictEqual(JSON.parse(r.stdout), { total: 1, created: 1, skipped: 0 });
+  });
+
+  test('decision_model enabled and answering yes: the CLI prints a same_as suggestion end to end', async () => {
+    const r = await copyWithStub(() => 'yes');
+    assert.strictEqual(r.code, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.deepStrictEqual({ total: out.total, created: out.created, skipped: out.skipped }, { total: 1, created: 1, skipped: 0 });
+    assert.strictEqual(out.same_as_suggestions.length, 1);
+    assert.match(out.same_as_suggestions[0].decided_by, /^decided-by: decision-model \(conf \d\.\d\d, backend openai-letter\)$/);
   });
 });

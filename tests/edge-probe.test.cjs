@@ -775,13 +775,29 @@ describe('edge-probe: decision-model fallthrough (261001-o30 D11 site #1)', () =
     assert.throws(() => ep.proposeCoverageWithDecisionModel('x', { decide: null }), /requirements must be an array/);
   });
 
-  test('privacy: a decide run writes no .gsd-trace.jsonl or any other file in the project', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-ep-priv-'));
+  test('privacy (real path): an answered run writes no .gsd-trace.jsonl, and no file outside a configured log_path', async () => {
+    const { startLetterStub, makeDecisionProject, runNodeAsync, listFiles } = require('./helpers/decision-model-stub.cjs');
+    const stub = await startLetterStub(() => 'yes');
+    const projects = [];
     try {
-      const { decide } = fakeDecide(yesFor('io'));
-      ep.proposeCoverageWithDecisionModel([R1, R2], { decide, cwd: dir });
-      assert.deepEqual(fs.readdirSync(dir), []);
-    } finally { cleanup(dir); }
+      for (const logPath of [undefined, 'logs/decisions.jsonl']) {
+        const dm = { enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 5000, ...(logPath ? { log_path: logPath } : {}) };
+        const p = makeDecisionProject({ decision_model: dm }, { 'req.json': JSON.stringify([R1, R2]) });
+        projects.push(p);
+        const before = { dir: listFiles(p.dir), home: listFiles(p.home) };
+        const hitsBefore = stub.hits;
+        const r = await runNodeAsync([BUILT_SCRIPT, path.join(p.dir, 'req.json')], { cwd: p.dir, env: p.env, timeout: PROBE_TIMEOUT_MS * 2 });
+        assert.equal(r.code, 0, r.stderr);
+        assert.ok(stub.hits > hitsBefore, 'the run reached the backend through decideSync');
+        assert.ok(JSON.parse(r.stdout).items.some((i) => i.model_proposal), 'and applied an answer');
+        assert.deepEqual(listFiles(p.dir).filter((f) => !before.dir.includes(f)), logPath ? [logPath] : [], 'no trace file; only the opted-in log');
+        assert.deepEqual(listFiles(p.home), before.home, 'nothing is written under HOME / GSD_HOME');
+        if (logPath) assert.ok(fs.readFileSync(path.join(p.dir, logPath), 'utf8').trim().length > 0, 'the configured log was written');
+      }
+    } finally {
+      await stub.close();
+      for (const p of projects) p.cleanup();
+    }
   });
 
   test('property: applying any decide response only ever annotates unclassified rows', () => {

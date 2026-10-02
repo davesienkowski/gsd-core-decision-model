@@ -346,15 +346,6 @@ describe('query assumption-delta scan — decision-model fallthrough stays silen
     }
   }
 
-  async function closedPort() {
-    const net = require('node:net');
-    const srv = net.createServer();
-    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-    const { port } = srv.address();
-    await new Promise((r) => srv.close(r));
-    return port;
-  }
-
   test('decision_model disabled prints exactly detectAssumptionDelta\'s JSON', () => {
     const { detectAssumptionDelta } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'assumption-delta.cjs'));
     const r = scanIn({ enabled: false });
@@ -364,12 +355,41 @@ describe('query assumption-delta scan — decision-model fallthrough stays silen
     assert.deepStrictEqual(parsed, detectAssumptionDelta('Refactor the internal state machine.'));
   });
 
-  test('decision_model enabled against an unreachable backend prints the identical payload', async () => {
+  /** Run the scan against a stub without blocking the event loop the stub answers from. */
+  async function scanWithStub(pick) {
+    const { startLetterStub, makeDecisionProject, runNodeAsync } = require('./helpers/decision-model-stub.cjs');
+    const stub = await startLetterStub(pick);
+    const p = makeDecisionProject(
+      { decision_model: { enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 2000 } },
+      { '.planning/ROADMAP.md': NO_CUE },
+    );
+    try {
+      const r = await runNodeAsync([TOOLS_PATH, 'query', 'assumption-delta', 'scan', '01', '--json'],
+        { cwd: p.dir, env: { ...p.env, ...TEST_ENV_BASE }, timeout: LOOP_HOOK_POINT_CLI_TIMEOUT_MS });
+      return { ...r, hits: stub.hits };
+    } finally {
+      await stub.close();
+      p.cleanup();
+    }
+  }
+
+  test('decision_model enabled against a failing backend prints the identical payload, and the backend was reached', async () => {
     const off = scanIn({ enabled: false });
-    const port = await closedPort();
-    const on = scanIn({ enabled: true, model: 'fake-model', base_url: `http://127.0.0.1:${port}`, timeout_ms: 2000 });
     assert.ok(off.ok, off.stderr);
-    assert.ok(on.ok, on.stderr);
-    assert.strictEqual(on.stdout, off.stdout);
+    const on = await scanWithStub(() => ({ status: 500, body: 'no' }));
+    assert.strictEqual(on.code, 0, on.stderr);
+    assert.strictEqual(on.hits, 1, 'the enabled run reached the backend, so the scan is wired to the model path');
+    assert.strictEqual(on.stdout.trim(), off.stdout);
+  });
+
+  test('decision_model enabled and answering: a regex miss gains one model-proposed signal end to end', async () => {
+    const on = await scanWithStub(() => 'optional');
+    assert.strictEqual(on.code, 0, on.stderr);
+    const parsed = JSON.parse(on.stdout);
+    assert.strictEqual(parsed.detected, true);
+    assert.strictEqual(parsed.signals.length, 1);
+    assert.strictEqual(parsed.signals[0].kind, 'optional');
+    assert.strictEqual(parsed.signals[0].proposed_by, 'decision-model');
+    assert.match(parsed.signals[0].decided_by, /^decided-by: decision-model \(conf \d\.\d\d, backend openai-letter\)$/);
   });
 });
