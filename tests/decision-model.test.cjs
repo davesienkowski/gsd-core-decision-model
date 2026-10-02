@@ -678,7 +678,7 @@ describe('jev backend (fake HTTP only)', () => {
   });
 
   test('order_check re-asks only the checked questions with criteria reversed and remaps the score', async () => {
-    const h = fakeHttp((call, i) => ({
+    const h = fakeHttp((_call, i) => ({
       ok: true,
       status: 200,
       body: {
