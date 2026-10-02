@@ -1412,3 +1412,102 @@ describe('properties', () => {
     }));
   });
 });
+
+describe('D24 items mode engine (decideItemsSync)', () => {
+  const NOUL2 = { a: { type: 'noul', instructions: 'A?' }, b: { type: 'noul', instructions: 'B?' } };
+
+  /** A _spawn stand-in that answers every question of every request yes and records each payload. */
+  function recordingSpawn() {
+    const payloads = [];
+    const spawn = (cmd, args, opts) => {
+      const payload = JSON.parse(opts.input);
+      payloads.push({ payload, timeout: opts.timeout });
+      const results = payload.request.requests.map((r) => ({
+        id: r.id,
+        answers: Object.fromEntries(Object.keys(r.questions).map((k) => [k, { status: 'ok', answer: 'yes', p_yes: 0.95, confidence: 0.95 }])),
+      }));
+      return { status: 0, stdout: JSON.stringify({ response: { backend: 'openai-letter', model: 'm', endpoint_host: 'x', min_confidence: 0.9, results }, diagnostics: [] }) };
+    };
+    return { spawn, payloads };
+  }
+
+  test('130 items of 2 questions go out as chunks of 240 and 20 questions and merge back in item order', (t) => {
+    const { project } = syncProject(t, { log_path: '' });
+    const items = Array.from({ length: 130 }, (_, k) => ({ id: `i${k + 1}`, state: `state ${k + 1}` }));
+    const rec = recordingSpawn();
+    const r = mod.decideItemsSync(NOUL2, items, { cwd: project, _spawn: rec.spawn });
+    assert.deepEqual(rec.payloads.map((p) => p.payload.request.requests.length), [120, 10]);
+    assert.deepEqual(rec.payloads.map((p) => p.payload.request.requests.reduce((n, x) => n + Object.keys(x.questions).length, 0)), [240, 20]);
+    assert.deepEqual(r.results.map((x) => x.id), items.map((x) => x.id));
+    assert.deepEqual(rec.payloads.flatMap((p) => p.payload.request.requests.map((x) => x.state)), items.map((x) => x.state));
+    assert.ok(r.results.every((x) => x.answers.a.status === 'ok' && x.answers.b.status === 'ok'));
+  });
+
+  test('an unread item keeps its reason, after the capability gate, and carries its hashes', (t) => {
+    const { project } = syncProject(t, { log_path: '' });
+    const rec = recordingSpawn();
+    const items = [
+      { id: 'big', reason: 'context-exceeded', path_sha256: 'p'.repeat(64) },
+      { id: 'ok', state: 's', sha256: 'c'.repeat(64), path_sha256: 'd'.repeat(64) },
+      { id: 'out', reason: 'invalid-request' },
+    ];
+    const r = mod.decideItemsSync(NOUL2, items, { cwd: project, _spawn: rec.spawn });
+    assert.equal(rec.payloads.length, 1);
+    assert.deepEqual(rec.payloads[0].payload.request.requests.map((x) => x.id), ['ok']);
+    assert.deepEqual(r.results[0], { id: 'big', answers: { a: { status: 'abstain', reason: 'context-exceeded' }, b: { status: 'abstain', reason: 'context-exceeded' } }, path_sha256: 'p'.repeat(64) });
+    assert.equal(r.results[1].sha256, 'c'.repeat(64));
+    assert.equal(r.results[2].answers.a.reason, 'invalid-request');
+
+    const off = scopes(t, { enabled: false, model: 'm' });
+    const r2 = mod.decideItemsSync(NOUL2, items, { cwd: off, _spawn: rec.spawn });
+    assert.ok(r2.results.every((x) => x.answers.a.reason === 'capability-off'), 'capability-off comes first');
+    assert.equal(rec.payloads.length, 1, 'no child when the capability is off');
+  });
+
+  test('the overall budget is shared across chunks: each child gets what is left, and a spent budget starts no child', (t) => {
+    const { project } = syncProject(t, { log_path: '', timeout_ms: 30000 });
+    const items = Array.from({ length: 600 }, (_, k) => ({ id: `i${k + 1}`, state: 's' }));
+    const rec = recordingSpawn();
+    let clock = 0;
+    const spawn = (cmd, args, opts) => { const out = rec.spawn(cmd, args, opts); clock += 4000; return out; };
+    const r = mod.decideItemsSync({ a: NOUL2.a }, items, { cwd: project, budgetMs: 6000, _spawn: spawn, now: () => clock });
+    assert.equal(rec.payloads.length, 2, 'the third chunk found the budget spent');
+    assert.deepEqual(rec.payloads.map((p) => p.payload.budget_ms), [6000, 2000]);
+    assert.deepEqual(rec.payloads.map((p) => p.timeout), [11000, 7000], 'the kill follows the budget by the 5 s margin');
+    assert.ok(r.results.slice(0, 480).every((x) => x.answers.a.status === 'ok'));
+    assert.ok(r.results.slice(480).every((x) => x.answers.a.reason === 'timeout'));
+    assert.equal(r.results.length, 600);
+  });
+
+  test('structural faults throw: more than 240 questions per item, a bad or duplicate id, an empty list', (t) => {
+    const { project } = syncProject(t, { log_path: '' });
+    const many = Object.fromEntries(Array.from({ length: 241 }, (_, k) => [`q${k}`, NOUL2.a]));
+    for (const [qs, items] of [
+      [many, [{ id: 'a', state: 's' }]],
+      [NOUL2, [{ id: 'a', state: 's' }, { id: 'a', state: 's' }]],
+      [NOUL2, [{ id: 'default', state: 's' }]],
+      [NOUL2, [{ id: 'a' }]],
+      [NOUL2, []],
+    ]) {
+      assert.throws(() => mod.decideItemsSync(qs, items, { cwd: project, _spawn: () => { throw new Error('no spawn'); } }), /invalid request/);
+    }
+  });
+
+  test('validateItemsList accepts id, state_file and sha256 only', () => {
+    assert.deepEqual(mod.validateItemsList([{ id: 'a', state_file: 'x.md', sha256: true }, { id: 'b', state_file: '/t/y' }]),
+      { ok: true, items: [{ id: 'a', state_file: 'x.md', sha256: true }, { id: 'b', state_file: '/t/y', sha256: false }] });
+    for (const bad of [[], {}, [{ id: 'a' }], [{ id: 'a', state_file: '' }], [{ id: 'a b', state_file: 'x' }], [{ id: '__proto__', state_file: 'x' }],
+      [{ id: 'a', state_file: 'x', sha256: 'yes' }], [{ id: 'a', state_file: 'x', state: 'inline' }]]) {
+      assert.equal(mod.validateItemsList(bad).ok, false, JSON.stringify(bad));
+    }
+  });
+
+  test('a fractional deadline still gives every clipped call a whole-millisecond timeout (AbortSignal.timeout needs an integer)', async () => {
+    const calls = [];
+    const http = async (url, opts) => { calls.push(opts.timeoutMs); return { ok: false, status: 0, body: '', timedOut: true }; };
+    await mod.decide({ state: 's', questions: { a: NOUL2.a } }, { config: cfg({ timeout_ms: 30000 }), http, deadline: 2500.75, now: () => 0.5 });
+    assert.equal(calls.length, 1);
+    assert.ok(Number.isInteger(calls[0]), `timeout ${calls[0]}`);
+    assert.equal(calls[0], 2500);
+  });
+});

@@ -60,6 +60,7 @@ module.exports = {
   "tests/core-utils.test.cjs",
   "tests/cursor-subagent-isolation.test.cjs",
   "tests/debugger-semantic-recall.test.cjs",
+  "tests/decision-model-command-router.test.cjs",
   "tests/default-flip-documentation-lint.test.cjs",
   "tests/discuss-phase-power.test.cjs",
   "tests/docs-parity-live-registry.test.cjs",

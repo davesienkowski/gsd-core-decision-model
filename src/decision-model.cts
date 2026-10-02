@@ -55,6 +55,14 @@ const SPAWN_MARGIN_MS = 5000;
 /** WR-01: with less than this left before the child's deadline, no further backend call is started. */
 const MIN_CALL_MS = 1000;
 const TOP_LOGPROBS = 20;
+/**
+ * D24 items mode: no single decide call carries more than this many questions
+ * (MAX_QUESTIONS leaves headroom); a larger item set is split into chunks and the
+ * results are merged back in item order.
+ */
+const CHUNK_QUESTIONS = 240;
+/** D24 items mode: a state file larger than this is not read; its item abstains context-exceeded (never truncated). */
+const MAX_STATE_FILE_BYTES = 65536;
 
 const KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 /** D21: only a plainly named API-key variable may be read, so GITHUB_TOKEN or AWS_SECRET_ACCESS_KEY can never be named. */
@@ -256,7 +264,19 @@ interface DecisionResponse {
   endpoint_host: string | null;
   /** null when decision_model.min_confidence is invalid (WR-10). */
   min_confidence: number | null;
-  results: Array<{ id: string; answers: Record<string, Answer> }>;
+  results: Array<ResultEntry>;
+}
+
+/**
+ * One result. `sha256` and `path_sha256` appear only in items mode, on an item that
+ * asked for them (D24): the hex SHA-256 of the state bytes read (absent when the
+ * file was not read) and of the item's absolute state_file path in POSIX form.
+ */
+interface ResultEntry {
+  id: string;
+  answers: Record<string, Answer>;
+  sha256?: string;
+  path_sha256?: string;
 }
 
 // ─── Small helpers ────────────────────────────────────────────────────────────
@@ -393,6 +413,69 @@ function validateRequest(raw: unknown): RequestValidation {
     return { ok: false, message: `too many questions (${total}); the limit is ${MAX_QUESTIONS}` };
   }
   return { ok: true, form, requests };
+}
+
+// ─── Items mode input (D24) ───────────────────────────────────────────────────
+
+/** One entry of a `decide --items` file. */
+interface ItemSpec {
+  id: string;
+  state_file: string;
+  sha256: boolean;
+}
+
+type ItemsValidation = { ok: true; items: ItemSpec[] } | { ok: false; message: string };
+
+const ITEM_FIELDS: ReadonlySet<string> = new Set(['id', 'state_file', 'sha256']);
+/** At most this many entries in one items file. */
+const MAX_ITEMS = 10000;
+
+/**
+ * Validate the questions object of items mode (the D18 `questions` map, shared by
+ * every item). Structural faults return {ok:false}; a per-question fault abstains
+ * that question only, as in a request. More than CHUNK_QUESTIONS questions could
+ * never fit one call, so that is structural too.
+ */
+function validateItemQuestions(raw: unknown): { ok: true; count: number } | { ok: false; message: string } {
+  const qs = validateQuestions(raw, '');
+  if (!qs.ok) return qs;
+  if (qs.items.length > CHUNK_QUESTIONS) {
+    return { ok: false, message: `too many questions per item (${qs.items.length}); the limit is ${CHUNK_QUESTIONS}` };
+  }
+  return { ok: true, count: qs.items.length };
+}
+
+/**
+ * Validate a `decide --items` list: a non-empty JSON array of
+ * {"id", "state_file", "sha256"?} with unique ids under the key rule (never
+ * `default`) and no other field. The paths are not checked here; the router
+ * confines and reads them.
+ */
+function validateItemsList(raw: unknown): ItemsValidation {
+  if (!Array.isArray(raw) || raw.length === 0) return { ok: false, message: 'items must be a non-empty JSON array' };
+  if (raw.length > MAX_ITEMS) return { ok: false, message: `too many items (${raw.length}); the limit is ${MAX_ITEMS}` };
+  const seen = new Set<string>();
+  const items: ItemSpec[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const entry: unknown = raw[i];
+    const where = `items[${i}]: `;
+    if (!isPlainObject(entry)) return { ok: false, message: `${where}entry must be an object` };
+    for (const k of Object.keys(entry)) {
+      if (!ITEM_FIELDS.has(k)) return { ok: false, message: `${where}unknown field ${JSON.stringify(k)} (allowed: id, state_file, sha256)` };
+    }
+    const id = entry['id'];
+    if (typeof id !== 'string' || !isValidKey(id) || id === 'default') {
+      return { ok: false, message: `${where}id must match ${KEY_RE.source}, not be a reserved name and not be "default"` };
+    }
+    if (seen.has(id)) return { ok: false, message: `${where}duplicate id ${JSON.stringify(id)}` };
+    seen.add(id);
+    const stateFile = entry['state_file'];
+    if (typeof stateFile !== 'string' || stateFile.length === 0) return { ok: false, message: `${where}state_file must be a non-empty string` };
+    const sha = entry['sha256'];
+    if (sha !== undefined && typeof sha !== 'boolean') return { ok: false, message: `${where}sha256 must be a boolean` };
+    items.push({ id, state_file: stateFile, sha256: sha === true });
+  }
+  return { ok: true, items };
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -1182,7 +1265,9 @@ async function decide(request: unknown, deps: DecideDeps): Promise<DecisionRespo
   /** WR-01: the context for the next call, its timeout clipped to the deadline, or null when out of time. */
   const nextCtx = (): BackendContext | null => {
     if (deps.deadline === undefined) return ctx;
-    const left = deps.deadline - now();
+    // Whole milliseconds: the child's clock is performance.now(), and AbortSignal.timeout
+    // throws on a fractional delay, which would turn every clipped call into unreachable.
+    const left = Math.floor(deps.deadline - now());
     if (left < Math.min(MIN_CALL_MS, ctx.config.timeout_ms)) return null;
     return left >= ctx.config.timeout_ms ? ctx : { ...ctx, config: { ...ctx.config, timeout_ms: left } };
   };
@@ -1276,6 +1361,13 @@ type SpawnFn = (cmd: string, args: string[], opts: Json) => SpawnResultLike;
 
 interface DecideSyncOpts {
   cwd: string;
+  /**
+   * D24: an overall budget in milliseconds for this invocation. When it is smaller
+   * than the natural one, the child gets it as its call deadline (calls clipped to
+   * the time left, the rest abstain timeout) and is killed SPAWN_MARGIN_MS after it.
+   * Less than one call's minimum starts no child: every dispatchable question abstains timeout.
+   */
+  budgetMs?: number;
   _spawn?: SpawnFn;
 }
 
@@ -1366,15 +1458,20 @@ function appendLog(
  * config, then runs the async engine in a bounded child. Never throws for an
  * abstain condition; throws the TypeError only for a malformed request.
  */
-function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
-  const valid = assertValid(request);
-  const resolved = resolveDecisionConfig(opts.cwd);
+/** The resolved config with the capability gate applied to `enabled`. */
+function effectiveConfig(cwd: string): ConfigValidation {
+  const resolved = resolveDecisionConfig(cwd);
   /* eslint-disable-next-line @typescript-eslint/no-require-imports */
   const { isCapabilityActive } = require('./capability-state.cjs') as { isCapabilityActive: (id: string, cwd: string) => boolean };
-  const cfg: ConfigValidation = {
+  return {
     ...resolved,
-    config: { ...resolved.config, enabled: resolved.config.enabled && isCapabilityActive(CAPABILITY_ID, opts.cwd) },
+    config: { ...resolved.config, enabled: resolved.config.enabled && isCapabilityActive(CAPABILITY_ID, cwd) },
   };
+}
+
+function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
+  const valid = assertValid(request);
+  const cfg = effectiveConfig(opts.cwd);
   const finish = (response: DecisionResponse, diagnostics: unknown[]): DecisionResponse => {
     appendLog(opts.cwd, cfg, valid, response, diagnostics);
     return response;
@@ -1386,16 +1483,26 @@ function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
   // fallback reason passed here is never used (IN-09) and no child is spawned.
   if (calls === 0) return without(ABSTAIN_REASON.INVALID_OUTPUT);
 
+  const overall = typeof opts.budgetMs === 'number' && Number.isFinite(opts.budgetMs) ? Math.max(0, Math.floor(opts.budgetMs)) : undefined;
+  // D24: an overall budget too small for one call starts no child.
+  if (overall !== undefined && overall < Math.min(MIN_CALL_MS, cfg.config.timeout_ms)) return without(ABSTAIN_REASON.TIMEOUT);
+
   const spawn: SpawnFn = opts._spawn ?? (spawnSync as unknown as SpawnFn);
   const uncapped = cfg.config.timeout_ms * calls + SPAWN_MARGIN_MS;
-  const budget = Math.min(uncapped, MAX_SPAWN_BUDGET_MS);
+  let budget = Math.min(uncapped, MAX_SPAWN_BUDGET_MS);
   // WR-01: when the cap bites, the child stops starting calls SPAWN_MARGIN_MS before the
   // kill, so it returns the answers it has and only the rest abstain timeout. Uncapped,
   // every call already fits (each is bounded by timeout_ms), so no budget is passed.
   // IN-03: the child gets a duration and measures it on its own monotonic clock from its
   // start, so a wall-clock step (common on WSL2 after sleep) cannot move its deadline.
   // Its start-up time is covered by the margin.
-  const budgetMs = uncapped > MAX_SPAWN_BUDGET_MS ? budget - SPAWN_MARGIN_MS : undefined;
+  let budgetMs = uncapped > MAX_SPAWN_BUDGET_MS ? budget - SPAWN_MARGIN_MS : undefined;
+  // D24: a caller's overall budget that is tighter becomes the child's deadline, and
+  // the kill follows it by the same margin.
+  if (overall !== undefined && overall < budget - SPAWN_MARGIN_MS) {
+    budgetMs = overall;
+    budget = overall + SPAWN_MARGIN_MS;
+  }
   let res: SpawnResultLike;
   try {
     res = spawn(
@@ -1417,6 +1524,84 @@ function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
   if (!isPlainObject(response) || !Array.isArray(response['results'])) return without(ABSTAIN_REASON.INVALID_OUTPUT);
   const diagnostics = isPlainObject(parsed) && Array.isArray(parsed['diagnostics']) ? (parsed['diagnostics'] as unknown[]) : [];
   return finish(response as unknown as DecisionResponse, diagnostics);
+}
+
+// ─── decideItemsSync (D24 items mode) ─────────────────────────────────────────
+
+/** One prepared item: its raw state text, or the reason it was not read. */
+interface ItemInput {
+  id: string;
+  /** The state file's text, read raw; absent when `reason` is set. */
+  state?: string;
+  /** Why the state was not read (context-exceeded, invalid-request); every question abstains with it. */
+  reason?: AbstainReason;
+  sha256?: string;
+  path_sha256?: string;
+}
+
+interface DecideItemsOpts {
+  cwd: string;
+  /** Overall budget in milliseconds across every chunk; the questions not reached abstain timeout. */
+  budgetMs?: number;
+  _spawn?: SpawnFn;
+  /** The clock the budget is measured on; defaults to the monotonic performance.now (IN-03). */
+  now?: () => number;
+}
+
+/**
+ * Items mode (D24): one questions object asked of many states. The request is
+ * built here as data (each state is a string field, serialized with
+ * JSON.stringify by decideSync), so state text can never add or change a key.
+ * Items are sent in chunks of at most CHUNK_QUESTIONS questions, strictly in
+ * order, each chunk through decideSync with the budget that is left, and the
+ * results come back in item order. An item that was not read answers every
+ * question with its own reason, after the usual precedence (capability-off and
+ * a malformed question first). Throws a TypeError only for structural faults.
+ */
+function decideItemsSync(questions: unknown, items: readonly ItemInput[], opts: DecideItemsOpts): DecisionResponse {
+  const fail = (message: string): never => { throw new TypeError(`decision-model: invalid request: ${message}`); };
+  const qv = validateItemQuestions(questions);
+  if (!qv.ok) return fail(qv.message);
+  const qs = validateQuestions(questions, '');
+  if (!qs.ok) return fail(qs.message);
+  // Checked through an unknown alias: Array.isArray narrows a readonly array to any[].
+  const list: unknown = items;
+  if (!Array.isArray(list) || items.length === 0) return fail('items must be a non-empty array');
+  const seen = new Set<string>();
+  for (const it of items) {
+    if (!isPlainObject(it) || typeof it.id !== 'string' || !isValidKey(it.id) || it.id === 'default' || seen.has(it.id)) {
+      return fail('every item needs a unique id under the key rule, not "default"');
+    }
+    seen.add(it.id);
+    if (it.reason === undefined && typeof it.state !== 'string') return fail(`item ${it.id} has neither a state nor a reason`);
+  }
+
+  const now = opts.now ?? ((): number => performance.now());
+  const started = now();
+  const cfg = effectiveConfig(opts.cwd);
+  const perChunk = Math.max(1, Math.floor(CHUNK_QUESTIONS / qs.items.length));
+  const sendable = items.filter((it) => it.reason === undefined);
+  const answered = new Map<string, Record<string, Answer>>();
+  for (let i = 0; i < sendable.length; i += perChunk) {
+    const chunk = sendable.slice(i, i + perChunk);
+    const request = { requests: chunk.map((it) => ({ id: it.id, state: it.state as string, questions })) };
+    const budgetMs = opts.budgetMs === undefined ? undefined : Math.max(0, opts.budgetMs - (now() - started));
+    const res = decideSync(request, { cwd: opts.cwd, budgetMs, _spawn: opts._spawn });
+    for (const r of res.results) answered.set(r.id, r.answers);
+  }
+
+  const results: ResultEntry[] = items.map((it) => {
+    let answers = answered.get(it.id);
+    if (answers === undefined) {
+      answers = {};
+      for (const item of qs.items) answers[item.key] = preResolve(item, cfg) ?? abstain(it.reason ?? ABSTAIN_REASON.INVALID_OUTPUT);
+    }
+    const entry: ResultEntry = { id: it.id, answers };
+    if (typeof it.sha256 === 'string') entry.sha256 = it.sha256;
+    if (typeof it.path_sha256 === 'string') entry.path_sha256 = it.path_sha256;
+    return entry;
+  });
+  return envelope(cfg, results);
 }
 
 // ─── statusSync and provenance ────────────────────────────────────────────────
@@ -1542,8 +1727,13 @@ export = {
   BACKENDS,
   decide,
   decideSync,
+  decideItemsSync,
   statusSync,
   validateRequest,
+  validateItemsList,
+  validateItemQuestions,
+  CHUNK_QUESTIONS,
+  MAX_STATE_FILE_BYTES,
   validateDecisionConfig,
   resolveDecisionConfig,
   isLoopbackUrl,
