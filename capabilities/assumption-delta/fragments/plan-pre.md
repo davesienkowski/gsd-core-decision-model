@@ -8,7 +8,7 @@ Most quietly-imported architectural debt does not come from a missing upfront de
 
 ## Run the detector
 
-The detector is a deterministic scan over the phase scope text. It strips fenced code blocks first, so a trigger word that appears only inside a code snippet does not fire. It returns a typed result: `{ detected, signals[], terms }`. Resolve it through the `assumption-delta scan` query (same phase-section resolver as `roadmap.get-phase`):
+The detector is a cue-word scan over the phase scope text; when it finds nothing and the optional decision-model capability is active, a model answer may propose one signal. It strips fenced code blocks first, so a trigger word that appears only inside a code snippet does not fire. It returns a typed result: `{ detected, signals[], terms }`. Resolve it through the `assumption-delta scan` query (same phase-section resolver as `roadmap.get-phase`):
 
 ```bash
 ASSUMPTION_DELTA_JSON=$(gsd_run query assumption-delta scan "${PHASE}" --json 2>/dev/null) || true
@@ -27,7 +27,7 @@ Read `ASSUMPTION_DELTA_JSON`. Act on `detected` only — do **not** pattern-matc
 
 **If `detected` is `false`:** this phase does not change a core assumption. Skip the checkpoint entirely and continue planning. Do not raise it with the user.
 
-**If `detected` is `true`:** a core assumption may have lost its monopoly. The `signals[]` array tells you which family fired:
+**If `detected` is `true`:** a core assumption may have lost its monopoly. The `signals[]` array tells you which family fired. A signal with `proposed_by: decision-model` was proposed by the model, not a cue word: tell the user so and show its `decided_by` line; the user's answer decides.
 
 | `kind` | What changed | The question to answer |
 |---|---|---|

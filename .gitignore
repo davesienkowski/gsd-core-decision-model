@@ -77,6 +77,8 @@ build/
 /gsd-core/bin/lib/refactor-trigger-command-router.cjs
 /gsd-core/bin/lib/decision-model.cjs
 /gsd-core/bin/lib/decision-model-command-router.cjs
+# decision-model code-site seam (quick 261001-wzs): shared gate, lazy engine load and decided-by formatter for the probe, learnings and agent sites.
+/gsd-core/bin/lib/decision-model-fallthrough.cjs
 /gsd-core/bin/lib/host-integration.cjs
 /gsd-core/bin/lib/host-integration-sdk.cjs
 /gsd-core/bin/lib/host-integration-adapters/imperative-hook-bus.cjs

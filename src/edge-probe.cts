@@ -15,7 +15,22 @@
  *
  * Pure and dependency-free: it classifies each requirement's data/behavior shape, filters
  * the closed 8-category edge taxonomy to applicable categories, proposes concrete candidate
- * edges, and (via probe-core) merges author resolutions into a coverage report.
+ * edges, and (via probe-core) merges author resolutions into a coverage report. (IN-01: the CLI's
+ * proposal pass is the one exception, below. When a requirement falls through it reads the project
+ * config through the capability gate, so an invalid config.json prints the usual config warning
+ * on stderr; stdout is unchanged.)
+ *
+ * The pure functions above stay dependency-free and deterministic. Only the PROPOSAL pass of the
+ * CLI (no resolutions file) consults the optional decision-model capability (quick 261001-wzs,
+ * D11 site #1): for a requirement whose prose matched no shape cue and that has no authored
+ * `shapes` override, the model is asked which shapes apply: one call per requirement, in input
+ * order, all inside a 60 s wall budget (CR-01), so the CLI always returns its report in time; a
+ * requirement left unasked keeps its plain row and one stderr line says so. A status-ok `yes` answer
+ * becomes a `model_proposal` annotation on that requirement's existing `unclassified` row, with a
+ * `decided-by` line per label and a `confirm_with: { shapes }` override the author can paste to
+ * make the rows deterministic. No row is added, removed or re-statused, so item keys, coverage
+ * counts and the `--auto` unclassified exception stay exactly as without the model. A merge pass
+ * (resolutions file given) never consults the model, so it stays a pure function of its two files.
  */
 
 import {
@@ -28,6 +43,20 @@ import {
   analyzeCoverage as coreAnalyzeCoverage,
   runProbeCli,
 } from './probe-core.cjs';
+import {
+  type DecideFn,
+  type DecideOpts,
+  type DecisionBatchRequest,
+  type DecisionQuestion,
+  MAX_BATCH_QUESTIONS,
+  decideWithinBudget,
+  noteSkippedItems,
+  answersFor,
+  answerOf,
+  okYes,
+  decidedBy,
+  resolveSiteDecide,
+} from './decision-model-fallthrough.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import cliExitModule = require('./cli-exit.cjs');
 const { runMain } = cliExitModule;
@@ -254,6 +283,161 @@ export function analyzeCoverage(
 }
 
 /*
+ * Decision-model fallthrough (quick 261001-wzs, D11 site #1, D14, D18). Everything below is a
+ * post-pass over `analyzeCoverage`'s result: the pure classifiers above are untouched.
+ */
+
+/**
+ * One fixed yes/no question per shape, keyed exactly by the SHAPE_CUES keys. The instructions are
+ * module constants; the untrusted requirement prose goes only in the request `state` (ADR-1577).
+ */
+export const SHAPE_QUESTIONS: Readonly<Record<Shape, DecisionQuestion>> = Object.freeze({
+  'numeric-range': Object.freeze({ type: 'noul' as const, instructions: 'Does this requirement involve numbers with limits, thresholds, ranges, rounding, counts, amounts or rates? Answer yes or no.' }),
+  'collection': Object.freeze({ type: 'noul' as const, instructions: 'Does this requirement operate on lists, sets, groups or ranges, or involve sorting, merging or deduplication? Answer yes or no.' }),
+  'text': Object.freeze({ type: 'noul' as const, instructions: 'Does this requirement involve strings, names, labels, messages, length, truncation or character encoding? Answer yes or no.' }),
+  'stateful': Object.freeze({ type: 'noul' as const, instructions: 'Does this requirement involve saving, creating, updating, deleting, submitting, applying or retrying stored state? Answer yes or no.' }),
+  'io': Object.freeze({ type: 'noul' as const, instructions: 'Does this requirement involve files, network requests, APIs, uploads, downloads or connections? Answer yes or no.' }),
+});
+
+/** A model-proposed shape label with its provenance line (D14). */
+export interface ModelProposalLabel {
+  label: Shape;
+  decided_by: string;
+}
+
+/** The annotation a probe adds to an unclassified row. Never a row of its own. */
+export interface ModelProposal {
+  labels: ModelProposalLabel[];
+  categories: string[];
+  confirm_with: { shapes: Shape[] };
+}
+
+/** An edge item that may carry the optional model annotation (unclassified rows only). */
+export type AnnotatedEdge = Edge & { model_proposal?: ModelProposal };
+
+/** A coverage report whose unclassified rows may carry `model_proposal`. */
+export interface AnnotatedCoverageReport {
+  items: AnnotatedEdge[];
+  coverage: CoverageReport<EdgeVerification>['coverage'];
+}
+
+/** The planned batch: the D18 request plus which requirement each request id stands for. */
+export interface ShapePlan {
+  request: DecisionBatchRequest;
+  targets: Array<{ id: string; requirement_id: string }>;
+  /** Every zero-hit item, including any past the cap (IN-04), so a skip can be reported. */
+  fallthrough: number;
+}
+
+const SHAPE_KEYS = Object.keys(SHAPE_CUES) as Shape[];
+
+/**
+ * Plan the batched request for requirements the regex could not label (sent one request per
+ * call by the proposal pass). Pure. A requirement is
+ * asked only when it has no authored `shapes` array (including the `[]` opt-out) and
+ * `classifyShape(text_en ?? text)` is empty. The request state is that exact subject, verbatim.
+ * Returns null when nothing falls through.
+ */
+export function planShapeDecisions(requirements: Requirement[]): ShapePlan | null {
+  if (!Array.isArray(requirements)) return null;
+  const questions: Record<string, DecisionQuestion> = {};
+  for (const shape of SHAPE_KEYS) questions[shape] = SHAPE_QUESTIONS[shape];
+  const maxTargets = Math.floor(MAX_BATCH_QUESTIONS / SHAPE_KEYS.length);
+  const targets: ShapePlan['targets'] = [];
+  const requests: DecisionBatchRequest['requests'] = [];
+  let fallthrough = 0;
+  for (const req of requirements) {
+    if (req == null || Array.isArray(req.shapes)) continue;
+    const subject = req.text_en ?? req.text;
+    if (typeof subject !== 'string' || classifyShape(subject).length > 0) continue;
+    fallthrough += 1;
+    if (targets.length >= maxTargets) continue;
+    const id = `r${targets.length}`;
+    targets.push({ id, requirement_id: req.id });
+    requests.push({ id, state: subject, questions: { ...questions } });
+  }
+  return targets.length === 0 ? null : { request: { requests }, targets, fallthrough };
+}
+
+/**
+ * Apply a decide response to a report. Pure: returns a new report. Only status-ok `yes` answers
+ * count, so the engine's floor is the only threshold. Labels follow SHAPE_CUES order and
+ * categories follow TAXONOMY order, so identical answers give byte-identical JSON. Only the
+ * `unclassified` row of an asked requirement can gain `model_proposal`; everything else is
+ * copied through unchanged, so a null, malformed or all-abstain response returns an equal report.
+ */
+export function applyShapeDecisions(
+  report: CoverageReport<EdgeVerification>,
+  plan: ShapePlan | null,
+  response: unknown,
+): AnnotatedCoverageReport {
+  const proposals = new Map<string, ModelProposal>();
+  if (plan !== null) {
+    for (const target of plan.targets) {
+      const answers = answersFor(response, target.id);
+      if (answers === null) continue;
+      const labels: ModelProposalLabel[] = [];
+      for (const shape of SHAPE_KEYS) {
+        const answer = answerOf(answers, shape);
+        if (okYes(answer)) labels.push({ label: shape, decided_by: decidedBy(answer, response) });
+      }
+      if (labels.length === 0) continue;
+      const shapes = labels.map((l) => l.label);
+      proposals.set(target.requirement_id, {
+        labels,
+        categories: applicableCategories(shapes),
+        confirm_with: { shapes },
+      });
+    }
+  }
+  const items: AnnotatedEdge[] = report.items.map((item): AnnotatedEdge => {
+    const proposal = item.category === UNCLASSIFIED_CATEGORY ? proposals.get(item.requirement_id) : undefined;
+    return proposal === undefined ? item : { ...item, model_proposal: proposal };
+  });
+  return { ...report, items };
+}
+
+/**
+ * The proposal pass: today's `analyzeCoverage(requirements, [])` FIRST (so validation still
+ * throws exactly as before), then one decide call per requirement that fell through, inside the
+ * site wall budget (`decideWithinBudget`). With nothing to ask, no capability or a null decide,
+ * the deterministic report is returned as is. When the budget or the item cap left zero-hit
+ * requirements unasked, one stderr line reports how many got a proposal.
+ */
+export function proposeCoverageWithDecisionModel(
+  requirements: Requirement[],
+  opts: DecideOpts = {},
+): CoverageReport<EdgeVerification> | AnnotatedCoverageReport {
+  const base = analyzeCoverage(requirements, []);
+  const plan = planShapeDecisions(requirements);
+  if (plan === null) return base;
+  const decide: DecideFn | null = resolveSiteDecide(opts);
+  if (decide === null) return base;
+  const run = decideWithinBudget(decide, plan.request);
+  const report = applyShapeDecisions(base, plan, run.response);
+  if (run.outOfTime || plan.fallthrough > plan.targets.length) {
+    noteSkippedItems(report.items.filter((i) => i.model_proposal !== undefined).length, plan.fallthrough);
+  }
+  return report;
+}
+
+/**
+ * The `runProbeCli` analyze callback. With no resolutions path (`argv[3]`) this is the proposal
+ * pass and may consult the model; with one it is the pure merge pass, so spec-phase, ui-phase and
+ * the quick-probe gate re-run stay a pure function of their two input files.
+ */
+export function makeCliAnalyzer(
+  argv: readonly string[],
+  opts: DecideOpts = {},
+): (requirements: unknown, resolutions: unknown) => CoverageReport<EdgeVerification> | AnnotatedCoverageReport {
+  const mergePass = Boolean(argv[3]);
+  return (requirements: unknown, resolutions: unknown) =>
+    mergePass
+      ? analyzeCoverage(requirements as Requirement[], resolutions as Resolution<EdgeVerification>[])
+      : proposeCoverageWithDecisionModel(requirements as Requirement[], opts);
+}
+
+/*
  * CLI entry (EP-06 invokable surface): `edge-probe.cjs <requirements.json> [resolutions.json]`.
  * The generic I/O plumbing (parse, fail-closed exit 2, pretty-JSON out) lives in probe-core's
  * `runProbeCli`; the edge adapter supplies its `analyzeCoverage`. Guarded by
@@ -265,8 +449,7 @@ if (require.main === module) {
   // runMain to translate that throw into process.exitCode.
   runMain(() => {
     runProbeCli(
-      (requirements, resolutions) =>
-        analyzeCoverage(requirements as Requirement[], resolutions as Resolution<EdgeVerification>[]),
+      makeCliAnalyzer(process.argv, { cwd: process.cwd() }),
       { usage: 'edge-probe.cjs <requirements.json> [resolutions.json]' },
     );
   });

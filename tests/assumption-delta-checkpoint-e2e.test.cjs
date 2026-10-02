@@ -316,3 +316,80 @@ describe('query assumption-delta scan — unresolved phase reports skipped (#390
     assert.strictEqual(json.reason, 'phase_unresolved');
   });
 });
+
+// 261001-o30 D11 site #1: the scan handler is the one gsd-tools entry that may consult the
+// optional decision model. With the capability off, or on any abstain/failure, the payload is
+// byte-identical to the deterministic detector's.
+describe('query assumption-delta scan — decision-model fallthrough stays silent (261001-o30 D11)', () => {
+  const dirs = [];
+  afterEach(() => { while (dirs.length) cleanup(dirs.pop()); });
+
+  const NO_CUE = '# Roadmap\n\n### Phase 01: Cleanup\n\nRefactor the internal state machine.\n';
+
+  function scanIn(decisionModel) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-adelta-dm-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-adelta-home-'));
+    dirs.push(dir, home);
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ decision_model: decisionModel }));
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), NO_CUE, 'utf8');
+    try {
+      const stdout = execFileSync(process.execPath, [TOOLS_PATH, 'query', 'assumption-delta', 'scan', '01', '--json'], {
+        cwd: dir,
+        encoding: 'utf-8',
+        env: { ...process.env, ...TEST_ENV_BASE, HOME: home, USERPROFILE: home, GSD_HOME: home },
+        timeout: LOOP_HOOK_POINT_CLI_TIMEOUT_MS,
+      });
+      return { ok: true, stdout: stdout.trim() };
+    } catch (err) {
+      return { ok: false, stdout: err.stdout?.toString().trim() || '', stderr: err.stderr?.toString() || err.message };
+    }
+  }
+
+  test('decision_model disabled prints exactly detectAssumptionDelta\'s JSON', () => {
+    const { detectAssumptionDelta } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'assumption-delta.cjs'));
+    const r = scanIn({ enabled: false });
+    assert.ok(r.ok, r.stderr);
+    const parsed = JSON.parse(r.stdout);
+    assert.strictEqual(parsed.detected, false);
+    assert.deepStrictEqual(parsed, detectAssumptionDelta('Refactor the internal state machine.'));
+  });
+
+  /** Run the scan against a stub without blocking the event loop the stub answers from. */
+  async function scanWithStub(pick) {
+    const { startLetterStub, makeDecisionProject, runNodeAsync } = require('./helpers/decision-model-stub.cjs');
+    const stub = await startLetterStub(pick);
+    const p = makeDecisionProject(
+      { decision_model: { enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 2000 } },
+      { '.planning/ROADMAP.md': NO_CUE },
+    );
+    try {
+      const r = await runNodeAsync([TOOLS_PATH, 'query', 'assumption-delta', 'scan', '01', '--json'],
+        { cwd: p.dir, env: { ...p.env, ...TEST_ENV_BASE }, timeout: LOOP_HOOK_POINT_CLI_TIMEOUT_MS });
+      return { ...r, hits: stub.hits };
+    } finally {
+      await stub.close();
+      p.cleanup();
+    }
+  }
+
+  test('decision_model enabled against a failing backend prints the identical payload, and the backend was reached', async () => {
+    const off = scanIn({ enabled: false });
+    assert.ok(off.ok, off.stderr);
+    const on = await scanWithStub(() => ({ status: 500, body: 'no' }));
+    assert.strictEqual(on.code, 0, on.stderr);
+    assert.strictEqual(on.hits, 1, 'the enabled run reached the backend, so the scan is wired to the model path');
+    assert.strictEqual(on.stdout.trim(), off.stdout);
+  });
+
+  test('decision_model enabled and answering: a regex miss gains one model-proposed signal end to end', async () => {
+    const on = await scanWithStub(() => 'optional');
+    assert.strictEqual(on.code, 0, on.stderr);
+    const parsed = JSON.parse(on.stdout);
+    assert.strictEqual(parsed.detected, true);
+    assert.strictEqual(parsed.signals.length, 1);
+    assert.strictEqual(parsed.signals[0].kind, 'optional');
+    assert.strictEqual(parsed.signals[0].proposed_by, 'decision-model');
+    assert.match(parsed.signals[0].decided_by, /^decided-by: decision-model \(conf \d\.\d\d, backend openai-letter\)$/);
+  });
+});

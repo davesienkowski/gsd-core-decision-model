@@ -19,6 +19,20 @@
  * `tsc -p tsconfig.build.json` to the gitignored runtime artifact
  * `gsd-core/bin/lib/ui-consideration-probe.cjs`. Do NOT hand-write the `.cjs`; it is emitted.
  * Tests `require()` the built artifact; `pretest` runs `build:lib` first.
+ *
+ * The pure functions stay dependency-free and deterministic. Only the PROPOSAL pass of the CLI
+ * (no resolutions file) consults the optional decision-model capability (quick 261001-wzs, D11
+ * site #1): for an element whose prose matched no kind cue and that has no authored `elements`
+ * override, the model is asked which kinds apply: one call per element, in input order, all
+ * inside a 60 s wall budget (CR-01); an element left unasked keeps its plain row and one stderr
+ * line says so. A status-ok `yes` answer becomes a `model_proposal` annotation on that element's
+ * existing `unclassified` row, with a `decided-by` line per label and a `confirm_with: { elements }`
+ * override the author can paste to make the rows deterministic. No row is added, removed or
+ * re-statused, so item keys, coverage counts and the `autoResolve` unclassified exception stay
+ * exactly as without the model. A merge pass (resolutions file given) never consults the model.
+ * IN-01: when an element falls through, the proposal pass reads the project config through the
+ * capability gate, so an invalid config.json prints the usual config warning on stderr; stdout is
+ * unchanged.
  */
 
 import {
@@ -31,6 +45,20 @@ import {
   analyzeCoverage as coreAnalyzeCoverage,
   runProbeCli,
 } from './probe-core.cjs';
+import {
+  type DecideFn,
+  type DecideOpts,
+  type DecisionBatchRequest,
+  type DecisionQuestion,
+  MAX_BATCH_QUESTIONS,
+  decideWithinBudget,
+  noteSkippedItems,
+  answersFor,
+  answerOf,
+  okYes,
+  decidedBy,
+  resolveSiteDecide,
+} from './decision-model-fallthrough.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import cliExitModule = require('./cli-exit.cjs');
 const { runMain } = cliExitModule;
@@ -329,6 +357,160 @@ export function autoResolve(items: UIConsideration[]): Resolution<UIVerification
 }
 
 /*
+ * Decision-model fallthrough (quick 261001-wzs, D11 site #1, D14, D18). Everything below is a
+ * post-pass over `analyzeCoverage`'s result: the pure classifiers above are untouched.
+ */
+
+/**
+ * One fixed yes/no question per element kind, keyed exactly by the UI_CUES keys. The instructions
+ * are module constants; the untrusted element prose goes only in the request `state` (ADR-1577).
+ */
+export const UI_KIND_QUESTIONS: Readonly<Record<UIElementKind, DecisionQuestion>> = Object.freeze({
+  'form': Object.freeze({ type: 'noul' as const, instructions: 'Does this UI element take user input, such as a form, fields, checkboxes or submission? Answer yes or no.' }),
+  'list-collection': Object.freeze({ type: 'noul' as const, instructions: 'Does this UI element show a list, table, grid, feed or other repeated items? Answer yes or no.' }),
+  'nav': Object.freeze({ type: 'noul' as const, instructions: 'Does this UI element navigate between views, such as menus, tabs, breadcrumbs, a sidebar or pagination? Answer yes or no.' }),
+  'media': Object.freeze({ type: 'noul' as const, instructions: 'Does this UI element show images, video, avatars, thumbnails or icons? Answer yes or no.' }),
+  'interactive-control': Object.freeze({ type: 'noul' as const, instructions: 'Is this UI element a button, toggle, dropdown, slider or picker? Answer yes or no.' }),
+  'static-content': Object.freeze({ type: 'noul' as const, instructions: 'Does this UI element show headings, labels, titles or descriptive text? Answer yes or no.' }),
+});
+
+/** A model-proposed element-kind label with its provenance line (D14). */
+export interface ModelProposalLabel {
+  label: UIElementKind;
+  decided_by: string;
+}
+
+/** The annotation a probe adds to an unclassified row. Never a row of its own. */
+export interface ModelProposal {
+  labels: ModelProposalLabel[];
+  categories: string[];
+  confirm_with: { elements: UIElementKind[] };
+}
+
+/** A UI consideration that may carry the optional model annotation (unclassified rows only). */
+export type AnnotatedConsideration = UIConsideration & { model_proposal?: ModelProposal };
+
+/** A coverage report whose unclassified rows may carry `model_proposal`. */
+export interface AnnotatedCoverageReport {
+  items: AnnotatedConsideration[];
+  coverage: CoverageReport<UIVerification>['coverage'];
+}
+
+/** The planned batch: the D18 request plus which element each request id stands for. */
+export interface KindPlan {
+  request: DecisionBatchRequest;
+  targets: Array<{ id: string; requirement_id: string }>;
+  /** Every zero-hit item, including any past the cap (IN-04), so a skip can be reported. */
+  fallthrough: number;
+}
+
+const KIND_KEYS = Object.keys(UI_CUES) as UIElementKind[];
+
+/**
+ * Plan the batched request for elements the regex could not label (sent one request per call by
+ * the proposal pass). Pure. An element is asked
+ * only when it has no authored `elements` array (including the `[]` opt-out) and
+ * `classifyElement(text_en ?? text)` is empty. The request state is that exact subject, verbatim.
+ * Returns null when nothing falls through.
+ */
+export function planKindDecisions(elements: Element[]): KindPlan | null {
+  if (!Array.isArray(elements)) return null;
+  const questions: Record<string, DecisionQuestion> = {};
+  for (const kind of KIND_KEYS) questions[kind] = UI_KIND_QUESTIONS[kind];
+  const maxTargets = Math.floor(MAX_BATCH_QUESTIONS / KIND_KEYS.length);
+  const targets: KindPlan['targets'] = [];
+  const requests: DecisionBatchRequest['requests'] = [];
+  let fallthrough = 0;
+  for (const el of elements) {
+    if (el == null || Array.isArray(el.elements)) continue;
+    const subject = el.text_en ?? el.text;
+    if (typeof subject !== 'string' || classifyElement(subject).length > 0) continue;
+    fallthrough += 1;
+    if (targets.length >= maxTargets) continue;
+    const id = `r${targets.length}`;
+    targets.push({ id, requirement_id: el.id });
+    requests.push({ id, state: subject, questions: { ...questions } });
+  }
+  return targets.length === 0 ? null : { request: { requests }, targets, fallthrough };
+}
+
+/**
+ * Apply a decide response to a report. Pure: returns a new report. Only status-ok `yes` answers
+ * count, so the engine's floor is the only threshold. Labels follow UI_CUES order and categories
+ * follow UI_TAXONOMY order, so identical answers give byte-identical JSON. Only the `unclassified`
+ * row of an asked element can gain `model_proposal`; everything else is copied through unchanged.
+ */
+export function applyKindDecisions(
+  report: CoverageReport<UIVerification>,
+  plan: KindPlan | null,
+  response: unknown,
+): AnnotatedCoverageReport {
+  const proposals = new Map<string, ModelProposal>();
+  if (plan !== null) {
+    for (const target of plan.targets) {
+      const answers = answersFor(response, target.id);
+      if (answers === null) continue;
+      const labels: ModelProposalLabel[] = [];
+      for (const kind of KIND_KEYS) {
+        const answer = answerOf(answers, kind);
+        if (okYes(answer)) labels.push({ label: kind, decided_by: decidedBy(answer, response) });
+      }
+      if (labels.length === 0) continue;
+      const kinds = labels.map((l) => l.label);
+      proposals.set(target.requirement_id, {
+        labels,
+        categories: applicableCategories(kinds),
+        confirm_with: { elements: kinds },
+      });
+    }
+  }
+  const items: AnnotatedConsideration[] = report.items.map((item): AnnotatedConsideration => {
+    const proposal = item.category === UNCLASSIFIED_CATEGORY ? proposals.get(item.requirement_id) : undefined;
+    return proposal === undefined ? item : { ...item, model_proposal: proposal };
+  });
+  return { ...report, items };
+}
+
+/**
+ * The proposal pass: today's `analyzeCoverage(elements, [])` FIRST (so validation still throws
+ * exactly as before), then one decide call per element that fell through, inside the site wall
+ * budget (`decideWithinBudget`). With nothing to ask, no capability or a null decide, the
+ * deterministic report is returned as is. When the budget or the item cap left zero-hit elements
+ * unasked, one stderr line reports how many got a proposal.
+ */
+export function proposeCoverageWithDecisionModel(
+  elements: Element[],
+  opts: DecideOpts = {},
+): CoverageReport<UIVerification> | AnnotatedCoverageReport {
+  const base = analyzeCoverage(elements, []);
+  const plan = planKindDecisions(elements);
+  if (plan === null) return base;
+  const decide: DecideFn | null = resolveSiteDecide(opts);
+  if (decide === null) return base;
+  const run = decideWithinBudget(decide, plan.request);
+  const report = applyKindDecisions(base, plan, run.response);
+  if (run.outOfTime || plan.fallthrough > plan.targets.length) {
+    noteSkippedItems(report.items.filter((i) => i.model_proposal !== undefined).length, plan.fallthrough);
+  }
+  return report;
+}
+
+/**
+ * The `runProbeCli` analyze callback. With no resolutions path (`argv[3]`) this is the proposal
+ * pass and may consult the model; with one it is the pure merge pass.
+ */
+export function makeCliAnalyzer(
+  argv: readonly string[],
+  opts: DecideOpts = {},
+): (elements: unknown, resolutions: unknown) => CoverageReport<UIVerification> | AnnotatedCoverageReport {
+  const mergePass = Boolean(argv[3]);
+  return (elements: unknown, resolutions: unknown) =>
+    mergePass
+      ? analyzeCoverage(elements as Element[], resolutions as Resolution<UIVerification>[])
+      : proposeCoverageWithDecisionModel(elements as Element[], opts);
+}
+
+/*
  * CLI entry (invokable surface): `ui-consideration-probe.cjs <elements.json> [resolutions.json]`.
  * The generic I/O plumbing (parse, fail-closed exit 2, pretty-JSON out) lives in probe-core's
  * `runProbeCli`; this adapter supplies its `analyzeCoverage`. Guarded by `require.main === module`
@@ -340,8 +522,7 @@ if (require.main === module) {
   // runMain to translate that throw into process.exitCode.
   runMain(() => {
     runProbeCli(
-      (elements, resolutions) =>
-        analyzeCoverage(elements as Element[], resolutions as Resolution<UIVerification>[]),
+      makeCliAnalyzer(process.argv, { cwd: process.cwd() }),
       { usage: 'ui-consideration-probe.cjs <elements.json> [resolutions.json]' },
     );
   });

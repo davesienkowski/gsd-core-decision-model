@@ -414,3 +414,113 @@ describe('assumption-delta hardening (Codex review)', () => {
     assert.ok(parsed.terms.pluralization.includes('second'), 'default pluralization cues restored');
   });
 });
+
+describe('detectAssumptionDeltaWithModel — decision-model fallthrough (261001-o30 D11 site #1)', () => {
+  const mod = require(MODULE_PATH);
+  const { detectAssumptionDelta, detectAssumptionDeltaWithModel, DELTA_QUESTION } = mod;
+  const { validateRequest } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'decision-model.cjs'));
+
+  const NO_SIGNAL = 'Refactor the internal state machine.';
+  const SPANISH = 'Soportar un segundo proveedor de identidad para los clientes';
+  const LINE = 'decided-by: decision-model (conf 0.92, backend openai-letter)';
+
+  function fakeDecide(answerFor) {
+    const calls = [];
+    const decide = (request) => {
+      calls.push(request);
+      const v = validateRequest(request);
+      assert.equal(v.ok, true, `fake decide got an invalid D18 request: ${v.message}`);
+      return {
+        backend: 'openai-letter',
+        model: 'fake-model',
+        endpoint_host: '127.0.0.1:1234',
+        min_confidence: 0.9,
+        results: request.requests.map((r) => ({ id: r.id, answers: answerFor(r) })),
+      };
+    };
+    return { decide, calls };
+  }
+  const choose = (choice, confidence = 0.92) => () => ({ delta: { status: 'ok', choice, confidence, probabilities: { [choice]: confidence } } });
+
+  test('a regex-detected scan never consults the model and is deep-equal to the detector', () => {
+    const text = 'Add a second authentication method.';
+    const { decide, calls } = fakeDecide(choose('optional'));
+    assert.deepStrictEqual(detectAssumptionDeltaWithModel(text, undefined, { decide }), detectAssumptionDelta(text));
+    assert.equal(calls.length, 0);
+  });
+
+  test('zero signals plus an ok choice yields one model-proposed signal with provenance', () => {
+    const { decide, calls } = fakeDecide(choose('optional'));
+    const base = detectAssumptionDelta(SPANISH);
+    assert.equal(base.detected, false, 'the Spanish prose must be a regex miss');
+    const r = detectAssumptionDeltaWithModel(SPANISH, undefined, { decide });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].requests.length, 1);
+    assert.deepStrictEqual(Object.keys(calls[0].requests[0].questions), ['delta']);
+    assert.deepStrictEqual(Object.keys(calls[0].requests[0].questions.delta.criteria), ['pluralization', 'optional', 'chosen', 'none']);
+    assert.equal(calls[0].requests[0].state, SPANISH, 'state is the text the regex scanned, verbatim');
+    assert.equal(r.detected, true);
+    assert.deepStrictEqual(r.signals, [{ kind: 'optional', term: '', snippet: '', proposed_by: 'decision-model', decided_by: LINE }]);
+    assert.deepStrictEqual(r.terms, base.terms);
+  });
+
+  test('the request state is the fence-stripped, CRLF-normalized text', () => {
+    const text = 'Soportar mas proveedores\r\n```js\nconst a = 1;\n```\r\nfin';
+    const { decide, calls } = fakeDecide(choose('none'));
+    detectAssumptionDeltaWithModel(text, undefined, { decide });
+    assert.equal(calls.length, 1);
+    assert.ok(!calls[0].requests[0].state.includes('const a'), 'fenced code is not sent to the model');
+    assert.ok(!calls[0].requests[0].state.includes('\r'));
+  });
+
+  test('none, abstain, null, garbage and unknown choices deep-equal the detector', () => {
+    const base = detectAssumptionDelta(SPANISH);
+    const responses = [
+      null, 'x', 42, {}, { results: 'x' },
+      { results: [{ id: 'd9', answers: choose('optional')() }] },
+      { results: [{ id: 'd0', answers: 'garbage' }] },
+      { results: [{ id: '__proto__', answers: choose('optional')() }] },
+      { results: [{ id: 'd0', answers: choose('none')() }] },
+      { results: [{ id: 'd0', answers: choose('bogus')() }] },
+      { results: [{ id: 'd0', answers: { delta: { status: 'abstain', reason: 'low-confidence', confidence: 0.5 } } }] },
+    ];
+    for (const response of responses) {
+      const calls = [];
+      const r = detectAssumptionDeltaWithModel(SPANISH, undefined, { decide: (req) => { calls.push(req); return response; } });
+      assert.equal(calls.length, 1);
+      assert.deepStrictEqual(r, base, JSON.stringify(response));
+    }
+  });
+
+  test('non-string, empty, whitespace-only and fence-only text never call decide', () => {
+    for (const text of [undefined, null, 42, {}, '', '   \n\t', '```js\nconst a = 1;\n```']) {
+      const { decide, calls } = fakeDecide(choose('optional'));
+      assert.deepStrictEqual(detectAssumptionDeltaWithModel(text, undefined, { decide }), detectAssumptionDelta(text));
+      assert.equal(calls.length, 0);
+    }
+  });
+
+  test('a null decide (capability inactive) is deep-equal to the detector', () => {
+    assert.deepStrictEqual(detectAssumptionDeltaWithModel(NO_SIGNAL, undefined, { decide: null }), detectAssumptionDelta(NO_SIGNAL));
+  });
+
+  test('DELTA_QUESTION is a fixed choice question with the four criteria', () => {
+    assert.equal(DELTA_QUESTION.type, 'choice');
+    assert.deepStrictEqual(Object.keys(DELTA_QUESTION.criteria), ['pluralization', 'optional', 'chosen', 'none']);
+  });
+
+  test('the bare stdin CLI is unchanged: it never consults the model, even with the capability enabled (exit 1 on a regex miss)', async () => {
+    const { startLetterStub, makeDecisionProject, runNodeAsync } = require('./helpers/decision-model-stub.cjs');
+    const stub = await startLetterStub(() => 'optional');
+    const p = makeDecisionProject({ decision_model: { enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 2000 } });
+    try {
+      const r = await runNodeAsync([MODULE_PATH, '--json'], { cwd: p.dir, env: p.env, timeout: PROBE_TIMEOUT_MS, input: SPANISH });
+      assert.equal(r.code, 1, 'exit 1 = examined, no signal (ADR-3889)');
+      assert.deepStrictEqual(JSON.parse(r.stdout), detectAssumptionDelta(SPANISH));
+      assert.equal(stub.hits, 0, 'an active capability and a reachable backend are never consulted by the stdin CLI');
+    } finally {
+      await stub.close();
+      p.cleanup();
+    }
+  });
+});

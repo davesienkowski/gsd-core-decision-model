@@ -20,6 +20,7 @@ process.env.GSD_TEST_MODE = '1';
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
@@ -447,5 +448,351 @@ describe('ui-consideration-probe: text_en language-aware classification (#4657)'
     const rep = JSON.parse(r.stdout);
     assert.equal(rep.coverage.unclassified, 0);
     assert.ok(rep.coverage.applicable > 0, 'translated elements must raise applicable categories');
+  });
+});
+
+describe('ui-consideration-probe: decision-model fallthrough (261001-o30 D11 site #1)', () => {
+  // D18 batch validator from the C1 engine: the fake decide rejects any request the real
+  // engine would refuse, so the site cannot drift from the locked interface.
+  const { validateRequest } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'decision-model.cjs'));
+  const KINDS = ['form', 'list-collection', 'nav', 'media', 'interactive-control', 'static-content'];
+
+  const E1 = { id: 'E1', text: 'A table listing all rows of results' };
+  const E2 = { id: 'E2', text: 'Formulario con campos para el nombre y la direccion del cliente' };
+
+  /** A call-counting fake decide that validates D18 and answers per-id from `answerFor`. */
+  function fakeDecide(answerFor) {
+    const calls = [];
+    const decide = (request) => {
+      calls.push(request);
+      const v = validateRequest(request);
+      assert.equal(v.ok, true, `fake decide got an invalid D18 request: ${v.message}`);
+      return {
+        backend: 'openai-letter',
+        model: 'fake-model',
+        endpoint_host: '127.0.0.1:1234',
+        min_confidence: 0.9,
+        results: request.requests.map((r) => ({ id: r.id, answers: answerFor(r) })),
+      };
+    };
+    return { decide, calls };
+  }
+
+  test('a zero-hit element keeps its unclassified row and gains a model_proposal annotation', () => {
+    assert.equal(typeof uc.proposeCoverageWithDecisionModel, 'function');
+    assert.notDeepEqual(uc.classifyElement(E1.text), [], 'E1 must be regex-labelled');
+    assert.deepEqual(uc.classifyElement(E2.text), [], 'E2 must be a zero-hit element');
+    const { decide, calls } = fakeDecide(() => ({
+      form: { status: 'ok', answer: 'yes', p_yes: 0.95, confidence: 0.95 },
+      'list-collection': { status: 'ok', answer: 'no', p_yes: 0.02, confidence: 0.98 },
+      nav: { status: 'abstain', reason: 'low-confidence', confidence: 0.6 },
+      media: { status: 'ok', answer: 'no', p_yes: 0.03, confidence: 0.97 },
+      'interactive-control': { status: 'ok', answer: 'no', p_yes: 0.04, confidence: 0.96 },
+      'static-content': { status: 'ok', answer: 'no', p_yes: 0.04, confidence: 0.96 },
+    }));
+    const base = uc.analyzeCoverage([E1, E2], []);
+    const report = uc.proposeCoverageWithDecisionModel([E1, E2], { decide });
+    assert.equal(calls.length, 1, 'exactly one decide call per run');
+    assert.equal(calls[0].requests.length, 1, 'only the zero-hit element is asked');
+    assert.equal(calls[0].requests[0].state, E2.text, 'state is the classified subject, verbatim');
+    assert.deepEqual(report.items.filter((i) => i.requirement_id === 'E1'),
+      base.items.filter((i) => i.requirement_id === 'E1'));
+    const baseRow = base.items.find((i) => i.requirement_id === 'E2');
+    const row = report.items.find((i) => i.requirement_id === 'E2');
+    assert.equal(row.category, 'unclassified');
+    const { model_proposal: mp, ...rest } = row;
+    assert.deepEqual(rest, baseRow, 'every base field is kept');
+    assert.deepEqual(mp, {
+      labels: [{ label: 'form', decided_by: 'decided-by: decision-model (conf 0.95, backend openai-letter)' }],
+      categories: uc.applicableCategories(['form']),
+      confirm_with: { elements: ['form'] },
+    });
+    assert.deepEqual(report.coverage, base.coverage);
+  });
+
+  /** Answers where only the listed kinds are an ok yes (confidence 0.97). */
+  const yesFor = (...kinds) => () => Object.fromEntries(KINDS.map((k) => [k, kinds.includes(k)
+    ? { status: 'ok', answer: 'yes', p_yes: 0.97, confidence: 0.97 }
+    : { status: 'ok', answer: 'no', p_yes: 0.02, confidence: 0.98 }]));
+
+  test('a fully regex-labelled set, or an authored elements override, never calls decide', () => {
+    for (const els of [
+      [E1],
+      [E1, { ...E2, elements: [] }],
+      [E1, { ...E2, elements: ['media'] }],
+    ]) {
+      const { decide, calls } = fakeDecide(yesFor('media'));
+      assert.deepEqual(uc.proposeCoverageWithDecisionModel(els, { decide }), uc.analyzeCoverage(els, []));
+      assert.equal(calls.length, 0);
+    }
+  });
+
+  test('an unusable decide response leaves the report equal to the no-model report', () => {
+    const base = JSON.stringify(uc.analyzeCoverage([E1, E2], []));
+    const allAbstain = Object.fromEntries(KINDS.map((k) => [k, { status: 'abstain', reason: 'low-confidence' }]));
+    const responses = [
+      null,
+      'nope',
+      42,
+      {},
+      { results: 'x' },
+      { results: [{ answers: yesFor('media')() }] },
+      { results: [{ id: 'r9', answers: yesFor('media')() }] },
+      { results: [{ id: 'r0', answers: 'garbage' }] },
+      { results: [{ id: '__proto__', answers: yesFor('media')() }] },
+      { backend: 'x', results: [{ id: 'r0', answers: allAbstain }] },
+      { backend: 'x', results: [{ id: 'r0', answers: yesFor()() }] },
+    ];
+    for (const response of responses) {
+      const calls = [];
+      const report = uc.proposeCoverageWithDecisionModel([E1, E2], { decide: (req) => { calls.push(req); return response; } });
+      assert.equal(calls.length, 1);
+      assert.equal(JSON.stringify(report), base, JSON.stringify(response));
+    }
+  });
+
+  test('text_en is the request state when present', () => {
+    const { decide, calls } = fakeDecide(yesFor());
+    // text_en classifies (table, rows), so it is regex-labelled and not asked at all
+    uc.proposeCoverageWithDecisionModel([{ id: 'E3', text: E2.text, text_en: E1.text }], { decide });
+    assert.equal(calls.length, 0);
+    const zero = { id: 'E4', text: E2.text, text_en: 'Zzz plugh frobnicate' };
+    assert.deepEqual(uc.classifyElement(zero.text_en), []);
+    uc.proposeCoverageWithDecisionModel([zero], { decide });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].requests[0].state, zero.text_en);
+  });
+
+  test('three zero-hit elements make one call each, ids r0..r2; labels and categories follow vocabulary order', () => {
+    const els = ['uno dos', 'tres cuatro', 'cinco seis'].map((text, i) => ({ id: `Z${i}`, text }));
+    const { decide, calls } = fakeDecide(yesFor('media', 'form', 'nav'));
+    const report = uc.proposeCoverageWithDecisionModel(els, { decide });
+    assert.equal(calls.length, 3, 'one call per item keeps each item\'s questions together inside the wall budget');
+    assert.deepEqual(calls.map((c) => c.requests.map((r) => r.id)), [['r0'], ['r1'], ['r2']]);
+    assert.deepEqual(calls.map((c) => c.requests[0].state), ['uno dos', 'tres cuatro', 'cinco seis']);
+    assert.deepEqual(report.items.map((i) => i.requirement_id), ['Z0', 'Z1', 'Z2']);
+    for (const item of report.items) {
+      assert.deepEqual(item.model_proposal.labels.map((l) => l.label), ['form', 'nav', 'media']);
+      assert.deepEqual(item.model_proposal.categories, uc.applicableCategories(['form', 'nav', 'media']));
+      assert.deepEqual(item.model_proposal.confirm_with, { elements: ['form', 'nav', 'media'] });
+    }
+  });
+
+  test('every question the request carries is a fixed noul keyed by the UI_CUES keys', () => {
+    assert.deepEqual(Object.keys(uc.UI_KIND_QUESTIONS), Object.keys(uc.UI_CUES));
+    const plan = uc.planKindDecisions([E2]);
+    assert.deepEqual(Object.keys(plan.request.requests[0].questions), Object.keys(uc.UI_CUES));
+    for (const q of Object.values(uc.UI_KIND_QUESTIONS)) assert.equal(q.type, 'noul');
+  });
+
+  test('a large zero-hit set is capped at the first floor(256 / questions) items so the batch stays inside the engine question limit', () => {
+    const els = Array.from({ length: 80 }, (_, i) => ({ id: `Q${i}`, text: `zzz ${i}` }));
+    const plan = uc.planKindDecisions(els);
+    const cap = Math.floor(256 / KINDS.length);
+    assert.equal(plan.targets.length, cap, 'exactly as many items as fit the engine limit');
+    assert.deepEqual(plan.targets.map((x) => x.requirement_id), els.slice(0, cap).map((e) => e.id), 'the first N in input order');
+    assert.equal(plan.fallthrough, 80, 'every zero-hit item is counted, so the overflow can be reported');
+    assert.equal(validateRequest(plan.request).ok, true);
+  });
+
+  test('IN-04: zero-hit items past the item cap are reported on stderr, never dropped silently', () => {
+    const items = Array.from({ length: 80 }, (_, i) => ({ id: `Q${i}`, text: `zzz ${i}` }));
+    const { decide, calls } = fakeDecide(yesFor('media'));
+    const writes = [];
+    const orig = process.stderr.write;
+    process.stderr.write = (chunk) => { writes.push(String(chunk)); return true; };
+    let report;
+    try { report = uc.proposeCoverageWithDecisionModel(items, { decide }); } finally { process.stderr.write = orig; }
+    const cap = Math.floor(256 / KINDS.length);
+    assert.equal(calls.length, cap);
+    assert.equal(report.items.filter((i) => i.model_proposal).length, cap);
+    assert.deepEqual(writes, [`decision-model: proposed ${cap} of 80 zero-hit items within the time budget\n`]);
+    const quiet = [];
+    process.stderr.write = (chunk) => { quiet.push(String(chunk)); return true; };
+    try { uc.proposeCoverageWithDecisionModel(items.slice(0, 3), { decide }); } finally { process.stderr.write = orig; }
+    assert.deepEqual(quiet, [], 'nothing is printed when every zero-hit item was asked');
+  });
+
+  test('makeCliAnalyzer consults the model only on the proposal pass, never on the merge pass', () => {
+    const els = [E1, E2];
+    const { decide, calls } = fakeDecide(yesFor('media'));
+    const merge = uc.makeCliAnalyzer(['node', 'ui-consideration-probe.cjs', 'els.json', 'res.json'], { decide });
+    assert.deepEqual(merge(els, []), uc.analyzeCoverage(els, []));
+    assert.equal(calls.length, 0);
+    const proposal = uc.makeCliAnalyzer(['node', 'ui-consideration-probe.cjs', 'els.json'], { decide });
+    const report = proposal(els, []);
+    assert.equal(calls.length, 1);
+    assert.ok(report.items.find((i) => i.requirement_id === 'E2').model_proposal);
+  });
+
+  test('proposeElements and autoResolve are unchanged, and autoResolve leaves an annotated unclassified row unresolved (#1110)', () => {
+    const { decide } = fakeDecide(yesFor('media'));
+    const report = uc.proposeCoverageWithDecisionModel([E1, E2], { decide });
+    const row = report.items.find((i) => i.requirement_id === 'E2');
+    assert.ok(row.model_proposal);
+    const resolutions = uc.autoResolve(report.items);
+    const resolved = resolutions.find((r) => r.requirement_id === 'E2');
+    assert.equal(resolved.status, 'unresolved');
+    assert.equal(resolved.verification, null);
+    assert.equal(resolved.model_proposal, undefined);
+    assert.deepEqual(uc.autoResolve(uc.analyzeCoverage([E1, E2], []).items), resolutions);
+    assert.equal(uc.proposeElements([E1, E2]).find((p) => p.id === 'E2').unclassified, true);
+  });
+
+  test('a null decide (capability inactive) and a validation error behave as without the model', () => {
+    assert.deepEqual(uc.proposeCoverageWithDecisionModel([E1, E2], { decide: null }), uc.analyzeCoverage([E1, E2], []));
+    assert.throws(() => uc.proposeCoverageWithDecisionModel([E1, E1], { decide: null }), /duplicate element id/);
+    assert.throws(() => uc.proposeCoverageWithDecisionModel('x', { decide: null }), /elements must be an array/);
+  });
+
+  test('privacy (real path): an answered run writes no .gsd-trace.jsonl, and no file outside a configured log_path', async () => {
+    const { startLetterStub, makeDecisionProject, runNodeAsync, listFiles } = require('./helpers/decision-model-stub.cjs');
+    const stub = await startLetterStub(() => 'yes');
+    const projects = [];
+    try {
+      for (const logPath of [undefined, 'logs/decisions.jsonl']) {
+        const dm = { enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 5000, ...(logPath ? { log_path: logPath } : {}) };
+        const p = makeDecisionProject({ decision_model: dm }, { 'els.json': JSON.stringify([E1, E2]) });
+        projects.push(p);
+        const before = { dir: listFiles(p.dir), home: listFiles(p.home) };
+        const hitsBefore = stub.hits;
+        const r = await runNodeAsync([BUILT_SCRIPT, path.join(p.dir, 'els.json')], { cwd: p.dir, env: p.env, timeout: PROBE_TIMEOUT_MS * 2 });
+        assert.equal(r.code, 0, r.stderr);
+        assert.ok(stub.hits > hitsBefore, 'the run reached the backend through decideSync');
+        assert.ok(JSON.parse(r.stdout).items.some((i) => i.model_proposal), 'and applied an answer');
+        assert.deepEqual(listFiles(p.dir).filter((f) => !before.dir.includes(f)), logPath ? [logPath] : [], 'no trace file; only the opted-in log');
+        assert.deepEqual(listFiles(p.home), before.home, 'nothing is written under HOME / GSD_HOME');
+        if (logPath) assert.ok(fs.readFileSync(path.join(p.dir, logPath), 'utf8').trim().length > 0, 'the configured log was written');
+      }
+    } finally {
+      await stub.close();
+      for (const p of projects) p.cleanup();
+    }
+  });
+
+  test('property: applying any decide response only ever annotates unclassified rows', () => {
+    const fc = require('fast-check');
+    const elArb = fc.uniqueArray(
+      fc.record({
+        id: fc.stringMatching(/^[A-Za-z][A-Za-z0-9_-]{0,8}$/),
+        text: fc.oneof(
+          fc.constantFrom('A table of rows', 'uno dos tres', 'zzz', 'A button', 'plugh'),
+          fc.string({ minLength: 1 }).filter((t) => t.trim().length > 0)),
+        elements: fc.option(fc.constantFrom([], ['media'], ['form', 'nav']), { nil: undefined }),
+      }, { requiredKeys: ['id', 'text'] }),
+      { selector: (r) => r.id, maxLength: 8 },
+    );
+    const answerArb = fc.oneof(
+      fc.constant({ status: 'ok', answer: 'yes', p_yes: 0.99, confidence: 0.99 }),
+      fc.constant({ status: 'ok', answer: 'no', p_yes: 0.01, confidence: 0.99 }),
+      fc.constant({ status: 'abstain', reason: 'low-confidence' }),
+      fc.anything(),
+    );
+    const responseArb = fc.oneof(
+      fc.anything(),
+      fc.record({
+        backend: fc.oneof(fc.constant('openai-letter'), fc.anything()),
+        results: fc.array(fc.record({
+          id: fc.constantFrom('r0', 'r1', 'r2', 'r3', '__proto__', 'x'),
+          answers: fc.dictionary(fc.constantFrom(...KINDS, '__proto__', 'constructor'), answerArb),
+        }), { maxLength: 6 }),
+      }),
+    );
+    fc.assert(fc.property(elArb, responseArb, (els, response) => {
+      const base = uc.analyzeCoverage(els, []);
+      const out = uc.applyKindDecisions(base, uc.planKindDecisions(els), response);
+      assert.equal(out.items.length, base.items.length);
+      assert.deepEqual(out.coverage, base.coverage);
+      out.items.forEach((item, idx) => {
+        const { model_proposal: mp, ...rest } = item;
+        assert.deepEqual(rest, base.items[idx]);
+        if (mp !== undefined) assert.equal(item.category, 'unclassified');
+      });
+    }), { numRuns: 100 });
+  });
+
+  test('subprocess: with decision_model enabled and a failing backend the CLI output equals the disabled run', async () => {
+    const http = require('node:http');
+    const { execFile } = require('node:child_process');
+    const run = (dir, home, elFile) => new Promise((resolve) => {
+      execFile(process.execPath, [BUILT_SCRIPT, elFile], {
+        cwd: dir, timeout: PROBE_TIMEOUT_MS * 2, encoding: 'utf8',
+        env: { ...process.env, HOME: home, USERPROFILE: home, GSD_HOME: home },
+      }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr }));
+    });
+    let hits = 0;
+    const server = http.createServer((req, res) => { hits += 1; req.resume(); res.statusCode = 500; res.end('no'); });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const dirs = [];
+    try {
+      const mk = (decisionModel) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uc-sub-'));
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uc-home-'));
+        dirs.push(dir, home);
+        fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+        fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ decision_model: decisionModel }));
+        const elFile = path.join(dir, 'els.json');
+        fs.writeFileSync(elFile, JSON.stringify([E1, E2]));
+        return { dir, home, elFile };
+      };
+      const on = mk({ enabled: true, model: 'fake-model', base_url: `http://127.0.0.1:${server.address().port}`, timeout_ms: 2000 });
+      const off = mk({ enabled: false });
+      const withModel = await run(on.dir, on.home, on.elFile);
+      const without = await run(off.dir, off.home, off.elFile);
+      assert.equal(withModel.code, 0, withModel.stderr);
+      assert.equal(without.code, 0, without.stderr);
+      assert.equal(withModel.stdout, without.stdout);
+      assert.ok(hits > 0, 'the enabled run reached the backend, so the active path is wired through decideSync');
+      assert.deepEqual(JSON.parse(without.stdout), uc.analyzeCoverage([E1, E2], []));
+    } finally {
+      server.close();
+      for (const d of dirs) cleanup(d);
+    }
+  });
+  test('subprocess: a slow backend is cut off at the wall budget and the full coverage report still prints', async () => {
+    const { execFile } = require('node:child_process');
+    const { startLetterStub } = require('./helpers/decision-model-stub.cjs');
+    // The test-mode budget override (GSD_TEST_MODE only, may only lower the 60 s budget) keeps this
+    // fast. The engine's own per-call timeout is far above it, so only the site budget can stop it.
+    const BUDGET_MS = 10000;
+    // The CLI is KILLED at budget + margin (node start-up, config read, one engine child), so a
+    // run that outlives the budget fails on the kill, not on a wall-clock assertion. Without the
+    // budget the hanging backend holds it for the engine's 30 s per-call timeout.
+    const KILL_BOUND_MS = BUDGET_MS + 10000;
+    const els = ['uno dos', 'tres cuatro', 'cinco seis'].map((text, i) => ({ id: `Z${i}`, text }));
+    // The first element's six questions are answered yes at once; from then on the backend hangs.
+    const stub = await startLetterStub((_user, hit) => (hit <= KINDS.length ? 'yes' : null));
+    const dirs = [];
+    const mk = (decisionModel) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uc-slow-'));
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-uc-slow-home-'));
+      dirs.push(dir, home);
+      fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ decision_model: decisionModel }));
+      fs.writeFileSync(path.join(dir, 'els.json'), JSON.stringify(els));
+      return { dir, home };
+    };
+    const run = ({ dir, home }) => new Promise((resolve) => {
+      execFile(process.execPath, [BUILT_SCRIPT, path.join(dir, 'els.json')], {
+        cwd: dir, timeout: KILL_BOUND_MS, killSignal: 'SIGKILL', encoding: 'utf8',
+        env: { ...process.env, HOME: home, USERPROFILE: home, GSD_HOME: home, GSD_TEST_MODE: '1', GSD_DECISION_MODEL_SITE_BUDGET_MS: String(BUDGET_MS) },
+      }, (err, stdout, stderr) => resolve({ code: err ? err.code : 0, signal: err ? err.signal : null, stdout, stderr }));
+    });
+    try {
+      const on = await run(mk({ enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 30000 }));
+      const off = await run(mk({ enabled: false }));
+      assert.equal(on.signal, null, `the CLI was killed at the ${KILL_BOUND_MS} ms bound; the budget is ${BUDGET_MS} ms`);
+      assert.equal(on.code, 0, on.stderr);
+      const report = JSON.parse(on.stdout);
+      const strip = (r) => ({ ...r, items: r.items.map(({ model_proposal: _mp, ...rest }) => rest) });
+      assert.deepEqual(strip(report), JSON.parse(off.stdout), 'every row and the coverage counts are the deterministic report');
+      assert.deepEqual(report.items.filter((i) => i.model_proposal).map((i) => i.requirement_id), ['Z0']);
+      assert.ok(stub.hits >= KINDS.length, `hits ${stub.hits}`);
+      assert.match(on.stderr, /^decision-model: proposed 1 of 3 zero-hit items within the time budget$/m);
+      assert.equal(off.stderr, '');
+    } finally {
+      await stub.close();
+      for (const d of dirs) cleanup(d);
+    }
   });
 });

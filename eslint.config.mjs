@@ -178,6 +178,8 @@ export default tseslint.config(
       // decision-model (quick 261001-wza): tsc-generated runtime artifacts — lint the src/decision-model*.cts sources.
       'gsd-core/bin/lib/decision-model.cjs',
       'gsd-core/bin/lib/decision-model-command-router.cjs',
+      // decision-model code-site seam (quick 261001-wzs): tsc-generated runtime artifact — lint the src/decision-model-fallthrough.cts source.
+      'gsd-core/bin/lib/decision-model-fallthrough.cjs',
       'gsd-core/bin/lib/api-coverage.cjs',
       'gsd-core/bin/lib/artifacts.cjs',
       'gsd-core/bin/lib/assumption-delta.cjs',

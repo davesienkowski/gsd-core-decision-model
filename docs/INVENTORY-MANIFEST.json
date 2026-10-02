@@ -405,6 +405,7 @@
       "coverage.cjs",
       "decision-coverage-support.cjs",
       "decision-model-command-router.cjs",
+      "decision-model-fallthrough.cjs",
       "decision-model.cjs",
       "decisions.cjs",
       "docs.cjs",
