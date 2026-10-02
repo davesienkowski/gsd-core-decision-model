@@ -127,11 +127,12 @@ Eligible: every non-empty UAT reply in verify-work `process_response`, one call 
 
 State file `s1.txt`: `Test: {name}`, `Expected: {expected}`, `Reply: {verbatim reply}`, one per line. Budget 60000.
 
-Apply: an `ok` bucket replaces the keyword match, with two confirmations, each asked once and decided by the user's answer:
-- When today's keyword lists would say `issue` (the reply matches no pass, skip, blocked or deferred list) and the model says another bucket: `Recorded as {bucket} (decided-by: ...); is this a problem to fix? [y/N]`. Yes keeps `issue`; no takes the model bucket.
-- An `ok` `issue` on a reply that matches the deferred keyword list: ask the user once whether it is a gap or a deferred follow-up, and record that answer (#1921).
+Apply, one general rule: compute today's keyword bucket first (the lists in verify-work, unchanged).
+- When an `ok` bucket EQUALS the keyword bucket, apply it silently, with its `decided-by:` line in the test entry as below.
+- When they DIFFER in any direction, echo both and ask the user once which is meant: `Keywords say {keyword bucket}, the model says {bucket} (decided-by: ...); which is meant?` The user's answer is the final result. This covers deferred to pass, blocked to pass, issue to anything, and the #1921 deferred-versus-issue case (a model `issue` on a reply that matches the deferred keyword list: is it a gap or a deferred follow-up?).
+- A model severity applies only when the final result is `issue`; otherwise ignore it.
 
-An `ok` `deferred` takes the deferred follow-up path and never writes a gap. `blocked` keeps `blocked_by` from the keyword table. An `ok` severity is used only when the final result is `issue`. Write the `decided-by:` line into the test entry in UAT.md in the SAME write as the result, never into the checkpoint output (present_test is byte-exact); a confirm question shows it, and `complete_session` lists each model-decided result with its line so the user can clarify. The verbatim reply is stored as today. Per question, abstain or error falls back to the keyword lists (severity default major).
+A final `deferred` takes the deferred follow-up path and never writes a gap. A final `blocked` keeps `blocked_by` from the keyword table. Write the `decided-by:` line into the test entry in UAT.md in the SAME write as the result, never into the checkpoint output (present_test is byte-exact); a confirm question shows it, and `complete_session` lists each model-decided result with its line so the user can clarify. The verbatim reply is stored as today. Per question, abstain or error falls back to the keyword lists (severity default major).
 
 ## site: inbox-type
 

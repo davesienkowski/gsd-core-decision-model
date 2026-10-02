@@ -463,8 +463,10 @@ describe('ui-consideration-probe: decision-model fallthrough (261001-o30 D11 sit
   /** A call-counting fake decide that validates D18 and answers per-id from `answerFor`. */
   function fakeDecide(answerFor) {
     const calls = [];
-    const decide = (request) => {
+    const limits = [];
+    const decide = (request, lim) => {
       calls.push(request);
+      limits.push(lim);
       const v = validateRequest(request);
       assert.equal(v.ok, true, `fake decide got an invalid D18 request: ${v.message}`);
       return {
@@ -475,7 +477,7 @@ describe('ui-consideration-probe: decision-model fallthrough (261001-o30 D11 sit
         results: request.requests.map((r) => ({ id: r.id, answers: answerFor(r) })),
       };
     };
-    return { decide, calls };
+    return { decide, calls, limits };
   }
 
   test('a zero-hit element keeps its unclassified row and gains a model_proposal annotation', () => {
@@ -563,13 +565,14 @@ describe('ui-consideration-probe: decision-model fallthrough (261001-o30 D11 sit
     assert.equal(calls[0].requests[0].state, zero.text_en);
   });
 
-  test('three zero-hit elements make one call each, ids r0..r2; labels and categories follow vocabulary order', () => {
+  test('three zero-hit elements make one batched call, ids r0..r2; labels and categories follow vocabulary order', () => {
     const els = ['uno dos', 'tres cuatro', 'cinco seis'].map((text, i) => ({ id: `Z${i}`, text }));
-    const { decide, calls } = fakeDecide(yesFor('media', 'form', 'nav'));
+    const { decide, calls, limits } = fakeDecide(yesFor('media', 'form', 'nav'));
     const report = uc.proposeCoverageWithDecisionModel(els, { decide });
-    assert.equal(calls.length, 3, 'one call per item keeps each item\'s questions together inside the wall budget');
-    assert.deepEqual(calls.map((c) => c.requests.map((r) => r.id)), [['r0'], ['r1'], ['r2']]);
-    assert.deepEqual(calls.map((c) => c.requests[0].state), ['uno dos', 'tres cuatro', 'cinco seis']);
+    assert.equal(calls.length, 1, 'one batched call per pass; the engine budget bounds it');
+    assert.deepEqual(limits, [{ budgetMs: 60000 }], 'the 60 s site budget goes to decideSync as budgetMs');
+    assert.deepEqual(calls[0].requests.map((r) => r.id), ['r0', 'r1', 'r2']);
+    assert.deepEqual(calls[0].requests.map((r) => r.state), ['uno dos', 'tres cuatro', 'cinco seis']);
     assert.deepEqual(report.items.map((i) => i.requirement_id), ['Z0', 'Z1', 'Z2']);
     for (const item of report.items) {
       assert.deepEqual(item.model_proposal.labels.map((l) => l.label), ['form', 'nav', 'media']);
@@ -604,7 +607,8 @@ describe('ui-consideration-probe: decision-model fallthrough (261001-o30 D11 sit
     let report;
     try { report = uc.proposeCoverageWithDecisionModel(items, { decide }); } finally { process.stderr.write = orig; }
     const cap = Math.floor(256 / KINDS.length);
-    assert.equal(calls.length, cap);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].requests.length, cap, 'one call carries the capped batch');
     assert.equal(report.items.filter((i) => i.model_proposal).length, cap);
     assert.deepEqual(writes, [`decision-model: proposed ${cap} of 80 zero-hit items within the time budget\n`]);
     const quiet = [];

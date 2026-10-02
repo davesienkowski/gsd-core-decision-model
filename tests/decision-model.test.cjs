@@ -1502,6 +1502,42 @@ describe('D24 items mode engine (decideItemsSync)', () => {
     }
   });
 
+  test('D27 validateItemsList: a valid lines span and prefix are carried; a bad one marks only that item invalid', () => {
+    const ok = mod.validateItemsList([
+      { id: 'a', state_file: 'x.md', lines: [3, 7], prefix: 'grep pattern: TODO' },
+      { id: 'b', state_file: 'x.md', lines: [5, 5] },
+      { id: 'c', state_file: 'x.md', lines: [1, 400] },
+      { id: 'd', state_file: 'x.md', prefix: 'p'.repeat(200) },
+      { id: 'e', state_file: 'x.md', prefix: '' },
+      { id: 'f', state_file: 'x.md', prefix: '\u{1F600}'.repeat(200) },
+    ]);
+    assert.equal(ok.ok, true);
+    assert.deepEqual(ok.items[0], { id: 'a', state_file: 'x.md', sha256: false, lines: [3, 7], prefix: 'grep pattern: TODO' });
+    assert.deepEqual(ok.items[1], { id: 'b', state_file: 'x.md', sha256: false, lines: [5, 5] });
+    assert.deepEqual(ok.items[2].lines, [1, 400]);
+    assert.equal(ok.items[3].prefix.length, 200);
+    assert.equal(ok.items[4].prefix, '');
+    assert.equal(ok.items[5].invalid, undefined, '200 code points are 400 UTF-16 units and still valid');
+    for (const item of ok.items) assert.equal(item.invalid, undefined, item.id);
+
+    const badLines = [[0, 1], [-1, 3], [3, 2], [1, 401], [10, 410], [1.5, 2], [1, 2.5], ['1', 2], [1], [1, 2, 3], [], 'a', 7, null, {}, [null, 2],
+      [Number.MAX_SAFE_INTEGER + 2, Number.MAX_SAFE_INTEGER + 3], [NaN, 2]];
+    for (const lines of badLines) {
+      const r = mod.validateItemsList([{ id: 'a', state_file: 'x.md', lines }, { id: 'z', state_file: 'x.md' }]);
+      assert.equal(r.ok, true, `a bad lines value is per-item, never structural: ${JSON.stringify(lines)}`);
+      assert.equal(r.items[0].invalid, true, JSON.stringify(lines));
+      assert.equal(r.items[0].lines, undefined);
+      assert.equal(r.items[1].invalid, undefined, 'the other item is untouched');
+    }
+    const badPrefix = ['p'.repeat(201), 'a\0b', '\0', 5, true, null, ['x'], {}, '\u{1F600}'.repeat(201)];
+    for (const prefix of badPrefix) {
+      const r = mod.validateItemsList([{ id: 'a', state_file: 'x.md', prefix, lines: [1, 2] }, { id: 'z', state_file: 'x.md' }]);
+      assert.equal(r.ok, true, `a bad prefix is per-item: ${JSON.stringify(prefix)}`);
+      assert.equal(r.items[0].invalid, true, JSON.stringify(prefix));
+      assert.equal(r.items[1].invalid, undefined);
+    }
+  });
+
   test('a fractional deadline still gives every clipped call a whole-millisecond timeout (AbortSignal.timeout needs an integer)', async () => {
     const calls = [];
     const http = async (url, opts) => { calls.push(opts.timeoutMs); return { ok: false, status: 0, body: '', timedOut: true }; };

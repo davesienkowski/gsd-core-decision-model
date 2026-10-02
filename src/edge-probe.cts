@@ -23,8 +23,8 @@
  * The pure functions above stay dependency-free and deterministic. Only the PROPOSAL pass of the
  * CLI (no resolutions file) consults the optional decision-model capability (quick 261001-wzs,
  * D11 site #1): for a requirement whose prose matched no shape cue and that has no authored
- * `shapes` override, the model is asked which shapes apply: one call per requirement, in input
- * order, all inside a 60 s wall budget (CR-01), so the CLI always returns its report in time; a
+ * `shapes` override, the model is asked which shapes apply: one batched decide call per pass (every
+ * such requirement, in input order) under a 60 s `budgetMs` (CR-01), so the CLI always returns its report in time; a
  * requirement left unasked keeps its plain row and one stderr line says so. A status-ok `yes` answer
  * becomes a `model_proposal` annotation on that requirement's existing `unclassified` row, with a
  * `decided-by` line per label and a `confirm_with: { shapes }` override the author can paste to
@@ -332,8 +332,8 @@ export interface ShapePlan {
 const SHAPE_KEYS = Object.keys(SHAPE_CUES) as Shape[];
 
 /**
- * Plan the batched request for requirements the regex could not label (sent one request per
- * call by the proposal pass). Pure. A requirement is
+ * Plan the batched request for requirements the regex could not label (sent as one batched call
+ * by the proposal pass, each requirement's questions contiguous). Pure. A requirement is
  * asked only when it has no authored `shapes` array (including the `[]` opt-out) and
  * `classifyShape(text_en ?? text)` is empty. The request state is that exact subject, verbatim.
  * Returns null when nothing falls through.
@@ -399,7 +399,7 @@ export function applyShapeDecisions(
 
 /**
  * The proposal pass: today's `analyzeCoverage(requirements, [])` FIRST (so validation still
- * throws exactly as before), then one decide call per requirement that fell through, inside the
+ * throws exactly as before), then ONE batched decide call for the requirements that fell through, bounded by the
  * site wall budget (`decideWithinBudget`). With nothing to ask, no capability or a null decide,
  * the deterministic report is returned as is. When the budget or the item cap left zero-hit
  * requirements unasked, one stderr line reports how many got a proposal.

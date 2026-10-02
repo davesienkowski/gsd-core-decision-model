@@ -17,9 +17,9 @@
  *    engine's `min_confidence` floor is the only threshold and no site applies its own.
  *  - Every applied answer carries its `decided-by` line (D14, ADR-1411).
  *  - A site with one fallthrough item makes at most one decide call per run. The probes, which
- *    can have many items, go through {@link decideWithinBudget}: one call per item (so each
- *    item's questions stay together) inside a {@link SITE_WALL_BUDGET_MS} wall budget, so a slow
- *    backend can never hold the probe CLI past the host shell-tool timeout (CR-01).
+ *    can have many items, go through {@link decideWithinBudget}: one batched call for the whole
+ *    pass, bounded by the engine's own `budgetMs` ({@link SITE_WALL_BUDGET_MS}), so a slow backend
+ *    can never hold the probe CLI past the host shell-tool timeout (CR-01).
  *
  * Why a double gate: `decideSync` also applies the capability gate, but `resolveDecide` checks
  * `isCapabilityActive` BEFORE it requires the engine. "Inactive means no engine load, no child
@@ -45,24 +45,11 @@ export const DECISION_MODEL_CAPABILITY_ID = 'decision-model';
 export const MAX_BATCH_QUESTIONS = 256;
 
 /**
- * CR-01: the whole model pass of one probe run gets this much wall time. The workflows run the
- * probe CLIs through the agent's shell tool (120 s default timeout); the deterministic report must
- * come back well inside that, whatever the backend does.
+ * CR-01: the whole model pass of one probe run gets this much wall time (the `budgetMs` of its one
+ * decide call). The workflows run the probe CLIs through the agent's shell tool (120 s default
+ * timeout); the deterministic report must come back well inside that, whatever the backend does.
  */
 export const SITE_WALL_BUDGET_MS = 60000;
-
-/**
- * Conservative start estimates, as fractions of the budget so a lowered test budget scales them:
- * at 60 s, 3 s a question (about twice the measured warm p90 of 1.6 s, D19 E7) and 9 s for a cold
- * first call. They only decide whether an item is worth starting; the hard bound is the child kill.
- */
-const WARM_QUESTION_SHARE = 1 / 20;
-const COLD_START_SHARE = 3 / 20;
-
-/** Abstain reasons that mean the backend will not answer the next item either, so the pass stops. */
-const STOP_REASONS: ReadonlySet<string> = new Set([
-  'capability-off', 'unreachable', 'model-missing', 'timeout', 'invalid-config', 'egress-not-consented',
-]);
 
 /** A D18 question: yes/no (`noul`) or one-of-N (`choice`). Instructions are fixed constants. */
 export interface DecisionQuestion {
@@ -76,9 +63,13 @@ export interface DecisionBatchRequest {
   requests: Array<{ id: string; state: string; questions: Record<string, DecisionQuestion> }>;
 }
 
-/** Optional per-call limits. `timeoutMs` bounds the whole call, engine child included. */
+/**
+ * Optional per-call limits. `budgetMs` is the engine's overall budget for the call (D24): answers
+ * come back in question order, the questions not reached abstain `timeout`, and the engine child
+ * is killed at the budget.
+ */
 export interface DecideLimits {
-  timeoutMs?: number;
+  budgetMs?: number;
 }
 
 /** A synchronous decide call: returns a D18 response object, or null when none is available. */
@@ -91,12 +82,9 @@ export interface DecideOpts {
   decide?: DecideFn | null;
 }
 
-/** The engine's spawn seam (`decideSync`'s `_spawn` option): spawnSync's signature. */
-type SpawnFn = (cmd: string, args: string[], options: Record<string, unknown>) => unknown;
-
 interface EngineSyncOpts {
   cwd: string;
-  _spawn?: SpawnFn;
+  budgetMs?: number;
 }
 
 interface Engine {
@@ -106,8 +94,6 @@ interface Engine {
 interface ResolveDeps {
   isActive?: (id: string, cwd: string) => boolean;
   loadEngine?: () => Engine;
-  /** The spawn under the time-limit clamp (tests); defaults to child_process.spawnSync. */
-  spawn?: SpawnFn;
 }
 
 const RESERVED_IDS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
@@ -143,31 +129,14 @@ export function resolveDecide(cwd: string, deps: ResolveDeps = {}): DecideFn | n
   });
   return (request: DecisionBatchRequest, limits?: DecideLimits): unknown => {
     try {
-      const limit = limits?.timeoutMs;
+      const limit = limits?.budgetMs;
       const bounded = typeof limit === 'number' && Number.isFinite(limit) && limit > 0;
-      return loadEngine().decideSync(request, bounded ? { cwd, _spawn: clampSpawn(limit, deps.spawn) } : { cwd });
+      return loadEngine().decideSync(request, bounded ? { cwd, budgetMs: limit } : { cwd });
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       process.stderr.write(`decision-model: call failed (${message}); continuing without it\n`);
       return null;
     }
-  };
-}
-
-/**
- * CR-01: a spawn for decideSync's `_spawn` option that kills the engine child once `limitMs` has
- * passed since this call, whatever the engine's own budget (timeout_ms x calls, up to 900 s). The
- * engine treats that kill as a `timeout` abstain. C1 takes no caller deadline, and its child
- * payload is internal, so the spawn timeout is the one engine-side limit a caller can set.
- */
-function clampSpawn(limitMs: number, base?: SpawnFn): SpawnFn {
-  const deadline = performance.now() + limitMs;
-  return (cmd: string, args: string[], options: Record<string, unknown>): unknown => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const spawn = base ?? (require('node:child_process') as { spawnSync: SpawnFn }).spawnSync;
-    const own = typeof options['timeout'] === 'number' ? options['timeout'] : limitMs;
-    const left = Math.max(1, Math.floor(deadline - performance.now()));
-    return spawn(cmd, args, { ...options, windowsHide: true, timeout: Math.min(own, left) });
   };
 }
 
@@ -183,50 +152,48 @@ export function siteBudgetMs(env: NodeJS.ProcessEnv = process.env): number {
   return ms >= 1 && ms <= SITE_WALL_BUDGET_MS ? ms : SITE_WALL_BUDGET_MS;
 }
 
-/** The outcome of a budgeted pass. `response` merges every item that came back (null for none). */
+/** The outcome of a budgeted pass. `response` merges every item that came back complete (null for none). */
 export interface BudgetedDecision {
   response: { backend?: string; results: Array<{ id: string; answers: Record<string, unknown> }> } | null;
   /** Items sent to decide. */
   asked: number;
-  /** True when time ran out: an item did not fit what was left, or a call came back `timeout`. */
+  /** True when time ran out: an item was cut off, or never reached, and abstained `timeout`. */
   outOfTime: boolean;
 }
 
 /**
- * CR-01: run a multi-item batch one item per call, in order, inside the wall budget. Each call
- * gets what is left of the budget as its hard limit. An item starts only when its conservative
- * estimate fits; the pass stops at the first item that does not, at an unusable response, or at an
- * abstain reason that means the backend will not answer the next item either. Items not asked or
- * not answered simply have no entry, so the site leaves them exactly as without the model.
+ * CR-01: run a multi-item pass as ONE batched decide call bounded by the engine's `budgetMs`. The
+ * engine asks the questions in order (item by item, each item's questions contiguous), clips each
+ * call to the time left, stops starting calls a quarter of the budget before the kill, and answers
+ * the questions it did not reach `abstain timeout`. An item counts only when every one of its
+ * questions has an answer and none of them abstained `timeout`, so a cut-off item is never applied
+ * half-labelled. Dropped items have no entry, so the site leaves them exactly as without the model.
  */
 export function decideWithinBudget(
   decide: DecideFn,
   request: DecisionBatchRequest,
-  deps: { now?: () => number; budgetMs?: number } = {},
+  deps: { budgetMs?: number } = {},
 ): BudgetedDecision {
-  const now = deps.now ?? ((): number => performance.now());
-  const budget = deps.budgetMs ?? siteBudgetMs();
-  const start = now();
+  const response = decide(request, { budgetMs: deps.budgetMs ?? siteBudgetMs() });
   const results: Array<{ id: string; answers: Record<string, unknown> }> = [];
-  let backend: string | undefined;
-  let asked = 0;
   let outOfTime = false;
   for (const item of request.requests) {
-    const remaining = budget - (now() - start);
-    const need = budget * (Object.keys(item.questions).length * WARM_QUESTION_SHARE + (asked === 0 ? COLD_START_SHARE : 0));
-    if (remaining < need) { outOfTime = true; break; }
-    const response = decide({ requests: [item] }, { timeoutMs: Math.floor(remaining) });
-    asked += 1;
     const answers = answersFor(response, item.id);
-    if (answers === null) break;
-    if (backend === undefined && isRecord(response) && typeof response['backend'] === 'string') backend = response['backend'];
-    results.push({ id: item.id, answers });
-    const reasons = Object.values(answers).map((a) => (isRecord(a) && a['status'] === 'abstain' ? a['reason'] : undefined));
-    if (reasons.includes('timeout')) { outOfTime = true; break; }
-    if (reasons.some((r) => typeof r === 'string' && STOP_REASONS.has(r))) break;
+    if (answers === null) continue;
+    let complete = true;
+    for (const key of Object.keys(item.questions)) {
+      const answer = answerOf(answers, key);
+      if (!isRecord(answer)) { complete = false; continue; }
+      if (answer['status'] === 'abstain' && answer['reason'] === 'timeout') { complete = false; outOfTime = true; }
+    }
+    if (complete) results.push({ id: item.id, answers });
   }
-  const response = results.length === 0 ? null : { ...(backend === undefined ? {} : { backend }), results };
-  return { response, asked, outOfTime };
+  const backend = isRecord(response) && typeof response['backend'] === 'string' ? response['backend'] : undefined;
+  return {
+    response: results.length === 0 ? null : { ...(backend === undefined ? {} : { backend }), results },
+    asked: request.requests.length,
+    outOfTime,
+  };
 }
 
 /**

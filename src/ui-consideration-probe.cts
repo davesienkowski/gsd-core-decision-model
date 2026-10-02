@@ -23,8 +23,8 @@
  * The pure functions stay dependency-free and deterministic. Only the PROPOSAL pass of the CLI
  * (no resolutions file) consults the optional decision-model capability (quick 261001-wzs, D11
  * site #1): for an element whose prose matched no kind cue and that has no authored `elements`
- * override, the model is asked which kinds apply: one call per element, in input order, all
- * inside a 60 s wall budget (CR-01); an element left unasked keeps its plain row and one stderr
+ * override, the model is asked which kinds apply: one batched decide call per pass (every such
+ * element, in input order) under a 60 s `budgetMs` (CR-01); an element left unasked keeps its plain row and one stderr
  * line says so. A status-ok `yes` answer becomes a `model_proposal` annotation on that element's
  * existing `unclassified` row, with a `decided-by` line per label and a `confirm_with: { elements }`
  * override the author can paste to make the rows deterministic. No row is added, removed or
@@ -407,8 +407,8 @@ export interface KindPlan {
 const KIND_KEYS = Object.keys(UI_CUES) as UIElementKind[];
 
 /**
- * Plan the batched request for elements the regex could not label (sent one request per call by
- * the proposal pass). Pure. An element is asked
+ * Plan the batched request for elements the regex could not label (sent as one batched call by
+ * the proposal pass, each element's questions contiguous). Pure. An element is asked
  * only when it has no authored `elements` array (including the `[]` opt-out) and
  * `classifyElement(text_en ?? text)` is empty. The request state is that exact subject, verbatim.
  * Returns null when nothing falls through.
@@ -473,8 +473,8 @@ export function applyKindDecisions(
 
 /**
  * The proposal pass: today's `analyzeCoverage(elements, [])` FIRST (so validation still throws
- * exactly as before), then one decide call per element that fell through, inside the site wall
- * budget (`decideWithinBudget`). With nothing to ask, no capability or a null decide, the
+ * exactly as before), then ONE batched decide call for the elements that fell through, bounded by the
+ * site wall budget (`decideWithinBudget`). With nothing to ask, no capability or a null decide, the
  * deterministic report is returned as is. When the budget or the item cap left zero-hit elements
  * unasked, one stderr line reports how many got a proposal.
  */
