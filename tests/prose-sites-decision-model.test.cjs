@@ -642,6 +642,10 @@ describe('decision-model-calls.md reference', () => {
     assert.ok(run, 'a Run line paragraph');
     assert.ok(run.includes('`## Self-Check`'), 'the executor run line has a destination that always exists');
     assert.ok(run.includes('never create an empty `## Known Stubs`'), 'the run line never creates an empty Known Stubs section');
+    // IN-04: every destination is a section the host's own template has.
+    assert.ok(run.includes('REVIEW.md `## Summary` (gsd-code-reviewer)'), 'the code-reviewer run line goes in REVIEW.md ## Summary');
+    assert.ok(read('agents/gsd-code-reviewer.md').split('\n').includes('## Summary'), 'the REVIEW.md template has ## Summary');
+    assert.ok(!run.includes('quick-depth findings'), 'no invented REVIEW.md section');
   });
 
   test('WR-02: every agent-site prefix is fixed vocabulary plus a line number, within the stated character rule', () => {

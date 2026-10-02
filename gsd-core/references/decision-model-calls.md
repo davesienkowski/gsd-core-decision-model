@@ -235,7 +235,7 @@ Scope: gsd-verifier sends only its stub-pattern hits (placeholder text, empty im
 
 Order: `ok` answers of `yes` by `p_yes` descending, then abstained hits (including those beyond the cap) in grep order, then `ok` answers of `no` by `p_yes` ascending; ties keep grep order. The agent reads and judges every hit in every group. Verdicts, severities, Known Stubs and findings are the agent's own; never quote the model as evidence.
 
-Run line, once and only when the call ran: VERIFICATION.md anti-pattern section (gsd-verifier), SUMMARY.md `## Known Stubs` when it lists real stubs, else a line of `## Self-Check`; never create an empty `## Known Stubs` (gsd-executor), REVIEW.md quick-depth findings (gsd-code-reviewer), UI-REVIEW.md Pillar 1 findings (gsd-ui-auditor).
+Run line, once and only when the call ran: VERIFICATION.md anti-pattern section (gsd-verifier), SUMMARY.md `## Known Stubs` when it lists real stubs, else a line of `## Self-Check`; never create an empty `## Known Stubs` (gsd-executor), REVIEW.md `## Summary` (gsd-code-reviewer), UI-REVIEW.md Pillar 1 findings (gsd-ui-auditor).
 
 ### Criterion flag
 
