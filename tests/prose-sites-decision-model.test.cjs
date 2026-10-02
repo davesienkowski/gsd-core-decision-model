@@ -319,9 +319,11 @@ const SITES = [
     file: 'gsd-core/workflows/profile-user.md',
     id: 'profile-prelabel',
     refSection: 'Profile pre-label',
-    maxBytes: 820,
+    maxBytes: 900,
     keep: ['Display: "✓ Sampled N messages from M projects"', 'Display: "◆ Analyzing patterns..."'],
-    must: ['profile-labels.json', 'Profile pre-label', 'decided-by:', 'carry on without it'],
+    // WR-06: the decide dir holds a copy of private messages, so it is removed on every path.
+    must: ['profile-labels.json', 'Profile pre-label', 'decided-by:', 'carry on without it', "gsd_run decide --rmdir '<dir>'",
+      'abstain, error and fallback', 'private messages'],
   },
 ];
 
@@ -589,6 +591,14 @@ describe('decision-model-calls.md reference', () => {
       const granted = tools[1].split(',').map((x) => x.trim());
       assert.ok(granted.includes('Write') && granted.includes('Bash'), `${site.file} hosts a block but lacks Write or Bash (D26)`);
     }
+  });
+
+  test('WR-06: the profile pre-label section removes the copied private messages on every path', () => {
+    const body = subsection(readReference(), 'Profile pre-label');
+    const afterCopy = body.slice(body.indexOf("cp '<sample>' '<dir>/messages.jsonl'"));
+    assert.ok(afterCopy.includes("gsd_run decide --rmdir '<dir>'"), 'the section names the rmdir right after the copy');
+    assert.ok(afterCopy.includes('abstain, error and fallback'), 'on every path, the fallback paths included');
+    assert.ok(afterCopy.includes('private messages'), 'it says why');
   });
 
   test('WR-05: a doc-claim flag never leads to a skip; it only adds advisory to a FAIL entry', () => {
