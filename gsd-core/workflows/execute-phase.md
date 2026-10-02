@@ -1298,9 +1298,10 @@ GL_ENABLED=$(gsd_run query config-get features.global_learnings --raw 2>/dev/nul
    failure must NOT block phase completion — report the failure and continue.
 2. Copy the phase artifact to the global store:
 ```bash
-gsd_run query learnings.copy 2>/dev/null || echo "⚠ Learnings copy failed — continuing"
+COPY_JSON=$(gsd_run query learnings.copy 2>/dev/null) || echo "⚠ Learnings copy failed — continuing"
+echo "$COPY_JSON" | jq -r '.same_as_suggestions[]? | "Suggestion only: learning \(.id) may repeat \(.same_as) (\(.decided_by))"' 2>/dev/null || true
 ```
-Copy failure must NOT block phase completion.
+Copy failure must NOT block phase completion. Show any printed suggestion lines to the user as suggestions only (model-proposed); never merge or delete a learning because of one.
 </step>
 
 <step name="close_phase_todos">
