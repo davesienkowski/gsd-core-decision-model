@@ -132,6 +132,12 @@ interface ConfigValidation {
   problems: string[];
   /** D21: user-scope-only keys that a project or workstream config set; they were ignored. */
   ignored_project_keys: string[];
+  /**
+   * WR-10: config keys whose value was invalid. Their slot in `config` holds the
+   * built-in default (never the raw value), and the response and --status report
+   * them as null, so a typed field never carries a value of the wrong type.
+   */
+  invalid_keys: string[];
 }
 
 type QuestionProblem = AbstainReason | null;
@@ -243,10 +249,12 @@ interface DecideDeps {
 }
 
 interface DecisionResponse {
-  backend: string;
+  /** null when decision_model.backend is invalid (WR-10). */
+  backend: string | null;
   model: string;
   endpoint_host: string | null;
-  min_confidence: number;
+  /** null when decision_model.min_confidence is invalid (WR-10). */
+  min_confidence: number | null;
   results: Array<{ id: string; answers: Record<string, Answer> }>;
 }
 
@@ -404,12 +412,14 @@ function parseNumber(v: unknown): number | undefined {
 
 /**
  * Normalize and validate the nine decision_model.* values. An absent (undefined)
- * value takes the built-in default. An invalid value is recorded as a problem and
- * echoed unchanged so the response can still report what was configured.
+ * value takes the built-in default. An invalid value is recorded as a problem;
+ * for min_confidence, timeout_ms and backend it is listed in `invalid_keys` and the
+ * default stands in, so the response reports null rather than echoing the raw value.
  */
 function validateDecisionConfig(raw: unknown): ConfigValidation {
   const src: Json = isPlainObject(raw) ? raw : {};
   const problems: string[] = [];
+  const invalidKeys: string[] = [];
   const pick = (k: keyof typeof CONFIG_DEFAULTS): unknown => (src[k] === undefined ? CONFIG_DEFAULTS[k] : src[k]);
   // Echo targets for invalid values only; a valid value is always replaced.
   const config = { ...CONFIG_DEFAULTS } as unknown as Record<string, unknown>;
@@ -423,19 +433,19 @@ function validateDecisionConfig(raw: unknown): ConfigValidation {
   const minConf = parseNumber(pick('min_confidence'));
   if (minConf === undefined || minConf < 0 || minConf > 1) {
     problems.push('min_confidence must be a number in [0, 1]');
-    config['min_confidence'] = pick('min_confidence');
+    invalidKeys.push('min_confidence');
   } else config['min_confidence'] = minConf;
 
   const timeout = parseNumber(pick('timeout_ms'));
   if (timeout === undefined || !Number.isInteger(timeout) || timeout < 1 || timeout > 600000) {
     problems.push('timeout_ms must be an integer from 1 to 600000');
-    config['timeout_ms'] = pick('timeout_ms');
+    invalidKeys.push('timeout_ms');
   } else config['timeout_ms'] = timeout;
 
   const backend = pick('backend');
   if (typeof backend !== 'string' || !hasOwn(BACKENDS, backend)) {
     problems.push('backend must be a registered backend id');
-    config['backend'] = backend;
+    invalidKeys.push('backend');
   } else config['backend'] = backend;
 
   const baseUrl = pick('base_url');
@@ -468,7 +478,9 @@ function validateDecisionConfig(raw: unknown): ConfigValidation {
   const logPath = pick('log_path');
   if (typeof logPath !== 'string') { problems.push('log_path must be a string'); config['log_path'] = ''; } else config['log_path'] = logPath;
 
-  return { valid: problems.length === 0, config: config as unknown as DecisionConfig, problems, ignored_project_keys: [] };
+  return {
+    valid: problems.length === 0, config: config as unknown as DecisionConfig, problems, ignored_project_keys: [], invalid_keys: invalidKeys,
+  };
 }
 
 /**
@@ -924,12 +936,17 @@ function mergeOrder(first: OkOutcome, second: BackendOutcome): BackendOutcome {
   return { ...first, confidence: Math.min(first.confidence, second.confidence) };
 }
 
+/** WR-10: a config value as reported, or null when it was invalid. */
+function reported<K extends 'backend' | 'min_confidence'>(cfg: ConfigValidation, key: K): DecisionConfig[K] | null {
+  return cfg.invalid_keys.includes(key) ? null : cfg.config[key];
+}
+
 function envelope(cfg: ConfigValidation, results: DecisionResponse['results']): DecisionResponse {
   return {
-    backend: cfg.config.backend,
+    backend: reported(cfg, 'backend'),
     model: cfg.config.model,
     endpoint_host: endpointHost(cfg.config.base_url),
-    min_confidence: cfg.config.min_confidence,
+    min_confidence: reported(cfg, 'min_confidence'),
     results,
   };
 }
@@ -1268,11 +1285,15 @@ interface StatusOpts {
 
 interface StatusResult {
   active: boolean;
-  backend: string;
+  /** null when decision_model.backend is invalid (WR-10). */
+  backend: string | null;
   model: string;
   endpoint_host: string | null;
-  min_confidence: number;
+  /** null when decision_model.min_confidence is invalid (WR-10). */
+  min_confidence: number | null;
   reachable: boolean | null;
+  /** WR-10: why the config is invalid (empty when it is valid). An invalid config abstains invalid-config. */
+  config_problems: string[];
   /** D21: project-scope values for user-scope-only keys that were ignored. */
   ignored_project_keys: string[];
 }
@@ -1311,11 +1332,12 @@ function statusSync(opts: StatusOpts): StatusResult {
 
   return {
     active,
-    backend: c.backend,
+    backend: reported(resolved, 'backend'),
     model: c.model,
     endpoint_host: endpointHost(c.base_url),
-    min_confidence: c.min_confidence,
+    min_confidence: reported(resolved, 'min_confidence'),
     reachable,
+    config_problems: resolved.problems,
     ignored_project_keys: resolved.ignored_project_keys,
   };
 }

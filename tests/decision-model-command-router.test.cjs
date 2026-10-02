@@ -265,6 +265,7 @@ describe('gsd-tools decide (full contract)', () => {
         endpoint_host: stub.host,
         min_confidence: 0.9,
         reachable: null,
+        config_problems: [],
         ignored_project_keys: [],
       });
     }

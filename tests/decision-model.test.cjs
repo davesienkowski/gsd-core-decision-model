@@ -416,6 +416,34 @@ describe('WR-01 child deadline keeps answers computed before the spawn cap', () 
   });
 });
 
+describe('WR-10 invalid config values are never echoed into typed fields', () => {
+  test('an invalid min_confidence or backend is null in the response envelope', async () => {
+    for (const [over, field] of [[{ min_confidence: 'high' }, 'min_confidence'], [{ min_confidence: 7 }, 'min_confidence'], [{ backend: 'nope' }, 'backend'], [{ backend: 42 }, 'backend']]) {
+      const { response, h } = await ask({ q: choiceQ() }, { config: cfg(over) });
+      assert.equal(response[field], null, JSON.stringify(over));
+      assert.deepEqual(response.results[0].answers.q, { status: 'abstain', reason: 'invalid-config' });
+      assert.equal(h.calls.length, 0);
+    }
+    const { response } = await ask({ q: choiceQ() }, { config: cfg({ min_confidence: 0.8 }) });
+    assert.equal(response.min_confidence, 0.8);
+    assert.equal(response.backend, 'openai-letter');
+  });
+
+  test('--status reports null for an out-of-range number and lists config_problems', (t) => {
+    // Through config.json, loadConfig already replaces a wrong-typed or out-of-enum value with
+    // the schema default; an in-type value outside the engine's range still reaches it.
+    const project = scopes(t, { enabled: true, model: 'm', min_confidence: 7, timeout_ms: -1 });
+    const st = mod.statusSync({ cwd: project });
+    assert.equal(st.min_confidence, null);
+    assert.equal(st.backend, 'openai-letter');
+    assert.equal(st.config_problems.length, 2, JSON.stringify(st.config_problems));
+    const good = mod.statusSync({ cwd: scopes(t, { enabled: true, model: 'm' }) });
+    assert.equal(good.min_confidence, 0.9);
+    assert.equal(good.backend, 'openai-letter');
+    assert.deepEqual(good.config_problems, []);
+  });
+});
+
 describe('D19 per-question min_confidence', () => {
   test('a question floor of 0.6 accepts confidence 0.7 while the config floor is 0.9', async () => {
     const { response, answers } = await ask(

@@ -1674,7 +1674,7 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 |------|-------------|
 | `--request <path>` | Read the request JSON from a file. The path must resolve inside the project root and the file must be a regular file of at most 4 MiB |
 | `--request -` | Read the request JSON from stdin |
-| `--status` | Print `{active, backend, model, endpoint_host, min_confidence, reachable, ignored_project_keys}`. `reachable` is `null` and no network call is made. `ignored_project_keys` lists user-scope-only keys (`decision_model.allow_remote`, `decision_model.api_key_env`) that a project or workstream `config.json` set and that were therefore ignored |
+| `--status` | Print `{active, backend, model, endpoint_host, min_confidence, reachable, config_problems, ignored_project_keys}`. `reachable` is `null` and no network call is made. `config_problems` lists why the config is invalid (empty when valid), and an invalid `backend` or `min_confidence` is reported as `null`. `ignored_project_keys` lists user-scope-only keys (`decision_model.allow_remote`, `decision_model.api_key_env`) that a project or workstream `config.json` set and that were therefore ignored |
 | `--status --probe` | As `--status`, and also check that the backend answers (`reachable` becomes `true` or `false`). `--probe` is valid only with `--status`, and `--request` cannot be combined with `--status` |
 
 **Request.** Single form `{"state": "<text>", "questions": {"<key>": Q}}`, or batch form `{"requests": [{"id": "<id>", "state": "<text>", "questions": {...}}, ...]}`. A batch id is unique and is not `default`. `state` is required and is a string (an empty string is accepted), a plain object or an array; it is JSON-encoded into the user message as data and is never truncated. A question `Q` is one of:
@@ -1685,7 +1685,7 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 
 `choice` and `score` need 2 to 24 criteria, and a `noul` question has none. Ids, question keys and criteria keys match `/^[A-Za-z0-9_.-]{1,64}$/` and are never `__proto__`, `constructor` or `prototype`. A criteria key must not be a plain integer such as `0`, `1` or `10` (use `level_1`): JavaScript orders integer-like keys first and ascending, which would silently reorder the options or score levels, so such a question abstains `invalid-request`. A question may add `min_confidence` (a number in `[0.5, 1]`, replacing the configured floor for that question) and `order_check` (a boolean; ask again with the options reversed). There are at most 256 questions in one request.
 
-**Response.** `{"backend", "model", "endpoint_host", "min_confidence", "results": [{"id", "answers": {"<key>": A}}]}`, with results in request order and the id `default` for the single form. `min_confidence` is the configured floor. An answer `A` is one of:
+**Response.** `{"backend", "model", "endpoint_host", "min_confidence", "results": [{"id", "answers": {"<key>": A}}]}`, with results in request order and the id `default` for the single form. `min_confidence` is the configured floor. When `decision_model.backend` or `decision_model.min_confidence` is invalid, that field is `null` (never the raw value) and every question abstains `invalid-config`. An answer `A` is one of:
 
 - choice: `{"status": "ok", "choice", "confidence", "probabilities"}`
 - noul: `{"status": "ok", "answer": "yes" | "no", "p_yes", "confidence"}`
