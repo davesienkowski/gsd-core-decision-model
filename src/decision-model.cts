@@ -70,6 +70,7 @@ const MAX_PREFIX_CHARS = 200;
 
 const KEY_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 /** D21: only a plainly named API-key variable may be read, so GITHUB_TOKEN or AWS_SECRET_ACCESS_KEY can never be named. */
+// phase-id-owner: not a phase id; this bracket matches an environment-variable name (D21 api_key_env allowlist).
 const API_KEY_ENV_RE = /^[A-Z][A-Z0-9_]*_API_KEY$/;
 /**
  * D21: keys honored only from the user's own GSD defaults ($GSD_HOME/.gsd/defaults.json),
