@@ -271,6 +271,62 @@ describe('WR-02 spawn bridge failure mapping', () => {
   }
 });
 
+describe('WR-07 spawn bridge and probe through the _spawn seam', () => {
+  for (const [label, spawn] of [
+    ['a non-zero exit', () => ({ status: 1, stdout: '' })],
+    ['unparseable stdout', () => ({ status: 0, stdout: 'garbage' })],
+    ['a response without a results array', () => ({ status: 0, stdout: JSON.stringify({ response: { backend: 'x' } }) })],
+    ['a missing stdout', () => ({ status: 0, stdout: null })],
+    ['a spawn that throws', () => { throw new Error('EAGAIN'); }],
+  ]) {
+    test(`${label} abstains invalid-output for every question and is logged`, (t) => {
+      const { project, logFile } = syncProject(t);
+      const r = mod.decideSync(TWO_Q, { cwd: project, _spawn: spawn });
+      for (const k of ['q1', 'q2']) assert.deepEqual(r.results[0].answers[k], { status: 'abstain', reason: 'invalid-output' }, k);
+      assert.deepEqual(logReasons(logFile), ['invalid-output', 'invalid-output']);
+    });
+  }
+
+  test('a good child response passes through, its diagnostics reach the log, and the child gets a bounded budget', (t) => {
+    const { project, logFile } = syncProject(t, { timeout_ms: 1000 });
+    const seen = [];
+    const response = {
+      backend: 'openai-letter', model: 'm', endpoint_host: '127.0.0.1:9', min_confidence: 0.9,
+      results: [{ id: 'default', answers: { q1: { status: 'ok', answer: 'yes', p_yes: 0.95, confidence: 0.95 }, q2: { status: 'abstain', reason: 'low-confidence', confidence: 0.6, below_floor_choice: 'no' } } }],
+    };
+    const r = mod.decideSync(TWO_Q, {
+      cwd: project,
+      _spawn: (cmd, args, opts) => {
+        seen.push({ cmd, args, opts });
+        return { status: 0, stdout: JSON.stringify({ response, diagnostics: [{ id: 'default', key: 'q1', http_status: 200, latency_ms: 12 }] }) };
+      },
+    });
+    assert.deepEqual(r, response);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].cmd, process.execPath);
+    assert.equal(seen[0].args[1], '--decide-child');
+    assert.equal(seen[0].opts.windowsHide, true);
+    assert.equal(seen[0].opts.timeout, 1000 * 2 + 5000, 'timeout_ms per call plus the margin');
+    const lines = splitLines(fs.readFileSync(logFile, 'utf8')).filter(Boolean).map((l) => JSON.parse(l));
+    assert.deepEqual(lines.map((l) => [l.key, l.status, l.http_status, l.latency_ms]), [['q1', 'ok', 200, 12], ['q2', 'abstain', null, null]]);
+  });
+
+  for (const [label, spawn, reachable] of [
+    ['a child that answers reachable true', () => ({ status: 0, stdout: '{"reachable":true}' }), true],
+    ['a child that answers reachable false', () => ({ status: 0, stdout: '{"reachable":false}' }), false],
+    ['a spawn error', () => ({ status: null, error: Object.assign(new Error('t'), { code: 'ETIMEDOUT' }) }), false],
+    ['a signal', () => ({ status: null, signal: 'SIGKILL' }), false],
+    ['a non-zero exit', () => ({ status: 1, stdout: '{"reachable":true}' }), false],
+    ['unparseable stdout', () => ({ status: 0, stdout: 'nope' }), false],
+    ['a spawn that throws', () => { throw new Error('EAGAIN'); }, false],
+  ]) {
+    test(`statusSync --probe: ${label} gives reachable ${reachable}`, (t) => {
+      const { project } = syncProject(t);
+      assert.equal(mod.statusSync({ cwd: project, probe: true, _spawn: spawn }).reachable, reachable);
+    });
+  }
+});
+
 describe('D19 per-question min_confidence', () => {
   test('a question floor of 0.6 accepts confidence 0.7 while the config floor is 0.9', async () => {
     const { response, answers } = await ask(
