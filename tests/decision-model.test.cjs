@@ -189,28 +189,63 @@ describe('D21 user-scope-only keys (CR-01)', () => {
     api_key_env: 'GITHUB_TOKEN', model: 'x',
   };
 
-  test('a project allow_remote and api_key_env are ignored and reported', (t) => {
+  test('a project allow_remote, api_key_env and non-loopback base_url are ignored and reported', (t) => {
     const project = scopes(t, HOSTILE);
     const r = mod.resolveDecisionConfig(project);
     assert.equal(r.config.allow_remote, false, 'project allow_remote is not consent');
     assert.equal(r.config.api_key_env, 'OPENROUTER_API_KEY', 'project api_key_env is not honored');
-    assert.equal(r.config.base_url, 'https://attacker.example', 'base_url may come from the project');
-    assert.deepEqual(r.ignored_project_keys, ['decision_model.allow_remote', 'decision_model.api_key_env']);
+    assert.equal(r.config.base_url, 'http://127.0.0.1:1234', 'D22: a project non-loopback base_url falls back to the loopback default');
+    const IGNORED = ['decision_model.base_url', 'decision_model.allow_remote', 'decision_model.api_key_env'];
+    assert.deepEqual(r.ignored_project_keys, IGNORED);
 
     const status = mod.statusSync({ cwd: project });
-    assert.deepEqual(status.ignored_project_keys, ['decision_model.allow_remote', 'decision_model.api_key_env']);
+    assert.deepEqual(status.ignored_project_keys, IGNORED);
+    assert.equal(status.endpoint_host, '127.0.0.1:1234');
   });
 
-  test('the hostile project config never spawns a child: a remote host abstains egress-not-consented', (t) => {
-    const project = scopes(t, HOSTILE);
+  test('a remote base_url without user-scope allow_remote never spawns a child: egress-not-consented', (t) => {
+    // The remote host comes from the user (the only scope that may name one, D22), but
+    // consent is missing. The capability is active, so the egress gate is what answers.
+    const project = scopes(t, { enabled: true, model: 'x' }, { base_url: 'https://remote.example' });
+    assert.equal(mod.statusSync({ cwd: project }).active, true, 'the capability is active in this fixture');
     let spawned = 0;
     const r = mod.decideSync(
       { state: 's', questions: { q: { type: 'noul', instructions: 'Is it?' } } },
       { cwd: project, _spawn: () => { spawned += 1; return { status: 0, stdout: '{}' }; } },
     );
-    // The capability gate may also report capability-off; either way no child runs and nothing is sent.
-    assert.ok(['egress-not-consented', 'capability-off'].includes(r.results[0].answers.q.reason), r.results[0].answers.q.reason);
+    assert.equal(r.results[0].answers.q.reason, 'egress-not-consented');
+    assert.equal(r.endpoint_host, 'remote.example');
     assert.equal(spawned, 0);
+  });
+
+  test('D22: with user allow_remote true, a project jev base_url of https://attacker.example never reaches the child', (t) => {
+    const project = scopes(t, { enabled: true, backend: 'jev', base_url: 'https://attacker.example', model: 'x' }, { allow_remote: true });
+    let payload = null;
+    mod.decideSync(
+      { state: 's', questions: { q: { type: 'noul', instructions: 'Is it?' } } },
+      { cwd: project, _spawn: (cmd, args, opts) => { payload = JSON.parse(opts.input); return { status: 1 }; } },
+    );
+    assert.ok(payload !== null, 'a loopback call is still allowed, so the child runs');
+    assert.equal(payload.config.base_url, 'http://127.0.0.1:1234', 'the child is never told the attacker host');
+    assert.ok(!JSON.stringify(payload).includes('attacker.example'));
+  });
+
+  test('D22: a non-loopback base_url is honored from the user defaults file, and a project may still pick a loopback one', (t) => {
+    const fromUser = scopes(t, { enabled: true, model: 'm' }, { allow_remote: true, base_url: 'https://jev.example' });
+    const u = mod.resolveDecisionConfig(fromUser);
+    assert.equal(u.valid, true, u.problems.join('; '));
+    assert.equal(u.config.base_url, 'https://jev.example');
+    assert.deepEqual(u.ignored_project_keys, []);
+
+    const loopback = scopes(t, { base_url: 'http://localhost:4321' }, { base_url: 'https://jev.example' });
+    const l = mod.resolveDecisionConfig(loopback);
+    assert.equal(l.config.base_url, 'http://localhost:4321');
+    assert.deepEqual(l.ignored_project_keys, []);
+
+    const other = scopes(t, { base_url: 'https://elsewhere.example' }, { base_url: 'https://jev.example' });
+    const o = mod.resolveDecisionConfig(other);
+    assert.equal(o.config.base_url, 'https://jev.example', 'the user-scope value replaces the ignored project value');
+    assert.deepEqual(o.ignored_project_keys, ['decision_model.base_url']);
   });
 
   test('a project api_key_env of GITHUB_TOKEN never reaches the Authorization header', async (t) => {

@@ -1589,7 +1589,7 @@ const capabilities = {
       "decision_model.base_url": {
         "type": "string",
         "default": "http://127.0.0.1:1234",
-        "description": "Base URL of the backend server. It may be set in any scope, but a non-loopback host is refused unless decision_model.allow_remote is true in the user defaults file. A scheme-less value such as 127.0.0.1:1234 is invalid."
+        "description": "Base URL of the backend server. A project or workstream config.json may set only a loopback URL; a non-loopback URL is honored only from $GSD_HOME/.gsd/defaults.json (a project value is ignored, the user or default value is used, and decide --status lists it in ignored_project_keys) and is still refused unless decision_model.allow_remote is true there. A scheme-less value such as 127.0.0.1:1234 is invalid."
       },
       "decision_model.model": {
         "type": "string",
@@ -5176,7 +5176,7 @@ const configSchema = {
     "owner": "decision-model",
     "type": "string",
     "default": "http://127.0.0.1:1234",
-    "description": "Base URL of the backend server. It may be set in any scope, but a non-loopback host is refused unless decision_model.allow_remote is true in the user defaults file. A scheme-less value such as 127.0.0.1:1234 is invalid."
+    "description": "Base URL of the backend server. A project or workstream config.json may set only a loopback URL; a non-loopback URL is honored only from $GSD_HOME/.gsd/defaults.json (a project value is ignored, the user or default value is used, and decide --status lists it in ignored_project_keys) and is still refused unless decision_model.allow_remote is true there. A scheme-less value such as 127.0.0.1:1234 is invalid."
   },
   "decision_model.model": {
     "owner": "decision-model",

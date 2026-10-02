@@ -130,7 +130,7 @@ interface ConfigValidation {
   valid: boolean;
   config: DecisionConfig;
   problems: string[];
-  /** D21: user-scope-only keys that a project or workstream config set; they were ignored. */
+  /** D21/D22: project or workstream values that were ignored (user-scope-only keys, a non-loopback base_url). */
   ignored_project_keys: string[];
   /**
    * WR-10: config keys whose value was invalid. Their slot in `config` holds the
@@ -486,6 +486,11 @@ function validateDecisionConfig(raw: unknown): ConfigValidation {
   };
 }
 
+/** True when two config values are the same JSON value (used to tell a copied user default from an override). */
+function sameConfigValue(a: unknown, b: unknown): boolean {
+  return a === b || JSON.stringify(a) === JSON.stringify(b);
+}
+
 /**
  * Read the nine keys through the capability config resolver, then validate them.
  *
@@ -493,7 +498,14 @@ function validateDecisionConfig(raw: unknown): ConfigValidation {
  * (config-loader's GSD_HOME-aware reader). A project or workstream value for
  * either is ignored and listed in `ignored_project_keys`, because a cloned
  * repository controls those files and must not consent to egress or choose
- * which secret is sent. Every other key resolves as before.
+ * which secret is sent.
+ *
+ * D22: the off-machine destination is user-decided too. A project or workstream
+ * base_url is honored only when it is loopback. A non-loopback one is ignored: the
+ * user-scope base_url (or the loopback default) stands in, and the project value
+ * is listed in `ignored_project_keys` unless it equals the user-scope value. So a
+ * cloned repository can never choose the remote host that receives the state or
+ * the user's API key, whatever the backend. Every other key resolves as before.
  */
 function resolveDecisionConfig(cwd: string): ConfigValidation {
   /* eslint-disable @typescript-eslint/no-require-imports */
@@ -520,6 +532,18 @@ function resolveDecisionConfig(cwd: string): ConfigValidation {
   const ignored: string[] = [];
   for (const k of Object.keys(CONFIG_DEFAULTS)) {
     const dotKey = `decision_model.${k}`;
+    if (k === 'base_url') {
+      // D22. Project presence is judged on the raw config.json files, as below.
+      const fromProject = resolveConfigKey(dotKey, { config: {}, cwd, registry: {}, quiet: true });
+      const fromUser = _getNestedConfigValue(userDefaults, dotKey);
+      if (fromProject.found && isLoopbackUrl(fromProject.value)) {
+        raw[k] = fromProject.value;
+        continue;
+      }
+      if (fromProject.found && !(fromUser.found && sameConfigValue(fromProject.value, fromUser.value))) ignored.push(dotKey);
+      raw[k] = fromUser.found ? fromUser.value : undefined;
+      continue;
+    }
     if (USER_SCOPE_KEYS.has(k)) {
       // Presence is judged on the raw workstream and root config.json files only:
       // the loaded config carries schema defaults for every capability key, and
@@ -1302,7 +1326,7 @@ interface StatusResult {
   reachable: boolean | null;
   /** WR-10: why the config is invalid (empty when it is valid). An invalid config abstains invalid-config. */
   config_problems: string[];
-  /** D21: project-scope values for user-scope-only keys that were ignored. */
+  /** D21/D22: project-scope values that were ignored (user-scope-only keys, a non-loopback base_url). */
   ignored_project_keys: string[];
 }
 

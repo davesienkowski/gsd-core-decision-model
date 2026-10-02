@@ -380,9 +380,10 @@ describe('gsd-tools decide (full contract)', () => {
   });
 
   test('a non-loopback base_url without allow_remote abstains egress-not-consented', async (t) => {
-    const project = makeProject(t, { enabled: true, model: 'stub-model', base_url: 'http://192.0.2.1:9' });
+    // D22: only the user defaults file may name a non-loopback base_url.
+    const project = makeProject(t, { enabled: true, model: 'stub-model' });
     const file = writeRequest(project, CHOICE_REQUEST);
-    const res = await runDecide(t, ['--request', file], { cwd: project });
+    const res = await runDecide(t, ['--request', file], { cwd: project, userDefaults: { decision_model: { base_url: 'http://192.0.2.1:9' } } });
     assert.equal(res.code, 0, `stderr: ${res.stderr}`);
     const out = JSON.parse(res.stdout);
     assert.deepEqual(out.results[0].answers.kind, { status: 'abstain', reason: 'egress-not-consented' });
@@ -513,14 +514,62 @@ describe('gsd-tools decide (full contract)', () => {
   test('D21: allow_remote from the user defaults file is the consent a remote base_url needs', async (t) => {
     // 192.0.2.1 is TEST-NET-1: with consent the call is attempted and fails (timeout or
     // unreachable); without consent it never leaves (egress-not-consented).
-    const project = makeProject(t, { enabled: true, model: 'stub-model', base_url: 'http://192.0.2.1:9', timeout_ms: 300 });
+    const project = makeProject(t, { enabled: true, model: 'stub-model', timeout_ms: 300 });
     const file = writeRequest(project, CHOICE_REQUEST);
-    const consented = await runDecide(t, ['--request', file], { cwd: project, userDefaults: { decision_model: { allow_remote: true } } });
+    const remote = 'http://192.0.2.1:9';
+    const consented = await runDecide(t, ['--request', file], { cwd: project, userDefaults: { decision_model: { allow_remote: true, base_url: remote } } });
     assert.equal(consented.code, 0, `stderr: ${consented.stderr}`);
     const reason = JSON.parse(consented.stdout).results[0].answers.kind.reason;
     assert.ok(['timeout', 'unreachable'].includes(reason), `consented call was attempted: ${reason}`);
-    const noConsent = await runDecide(t, ['--request', file], { cwd: project });
+    const noConsent = await runDecide(t, ['--request', file], { cwd: project, userDefaults: { decision_model: { base_url: remote } } });
     assert.deepEqual(JSON.parse(noConsent.stdout).results[0].answers.kind, { status: 'abstain', reason: 'egress-not-consented' });
+  });
+
+  test('D22: user allow_remote true and a project jev base_url of https://attacker.example: nothing reaches the attacker and the key never leaves the machine', async (t) => {
+    // The exact round-2 CR-01 attack. Every fetch made by gsd-tools and by the engine
+    // child is recorded by a preloaded fetch stand-in (inherited through NODE_OPTIONS),
+    // which answers like a refused connection, so no real network call is made.
+    const SECRET = 'or-secret-d22-4c1e9a';
+    const dir = createTempDir('gsd-decide-egress-');
+    t.after(() => cleanup(dir));
+    const egressLog = path.join(dir, 'egress.jsonl');
+    const preload = path.join(dir, 'record-egress.cjs');
+    fs.writeFileSync(preload, [
+      "'use strict';",
+      "const fs = require('node:fs');",
+      'globalThis.fetch = async (url, init = {}) => {',
+      '  const headers = init.headers || {};',
+      "  const auth = headers.Authorization || headers.authorization || '';",
+      '  fs.appendFileSync(process.env.GSD_TEST_EGRESS_LOG, JSON.stringify({ url: String(url), auth }) + "\\n");',
+      "  throw new TypeError('fetch failed');",
+      '};',
+    ].join('\n'));
+    const env = {
+      OPENROUTER_API_KEY: SECRET,
+      GSD_TEST_EGRESS_LOG: egressLog,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require "${preload}"`.trim(),
+    };
+    const userDefaults = { decision_model: { allow_remote: true } };
+    const project = makeProject(t, { enabled: true, backend: 'jev', base_url: 'https://attacker.example', model: 'x' });
+    const file = writeRequest(project, CHOICE_REQUEST);
+
+    const res = await runDecide(t, ['--request', file], { cwd: project, env, userDefaults });
+    assert.equal(res.code, 0, `stderr: ${res.stderr}`);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.endpoint_host, '127.0.0.1:1234', 'the project host was ignored');
+    assert.ok(!res.stdout.includes(SECRET));
+
+    const egress = fs.existsSync(egressLog) ? splitLines(fs.readFileSync(egressLog, 'utf8')).filter(Boolean).map((l) => JSON.parse(l)) : [];
+    const offMachine = egress.filter((r) => !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(r.url).hostname));
+    assert.deepEqual(offMachine, [], 'the attacker host (or any other remote host) received zero requests');
+    assert.ok(egress.every((r) => !r.url.includes('attacker.example')));
+    assert.ok(offMachine.every((r) => !r.auth.includes(SECRET)), 'the key is never sent off the machine');
+
+    const status = await runDecide(t, ['--status'], { cwd: project, env, userDefaults });
+    assert.equal(status.code, 0, `stderr: ${status.stderr}`);
+    const st = JSON.parse(status.stdout);
+    assert.deepEqual(st.ignored_project_keys, ['decision_model.base_url']);
+    assert.equal(st.endpoint_host, '127.0.0.1:1234');
   });
 
   test('WR-03: a directory or oversized --request path gives exactly one usage error', async (t) => {
