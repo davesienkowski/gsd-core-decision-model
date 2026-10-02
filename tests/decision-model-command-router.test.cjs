@@ -139,6 +139,36 @@ function writeRequest(project, request, name = 'request.json') {
   return file;
 }
 
+/**
+ * A preloaded fetch stand-in, inherited by gsd-tools and the engine child through
+ * NODE_OPTIONS. It records every fetch (URL, Authorization header, body) and answers
+ * like a refused connection, so no real network call is made.
+ */
+function egressRecorder(t) {
+  const dir = createTempDir('gsd-decide-egress-');
+  t.after(() => cleanup(dir));
+  const log = path.join(dir, 'egress.jsonl');
+  const preload = path.join(dir, 'record-egress.cjs');
+  fs.writeFileSync(preload, [
+    "'use strict';",
+    "const fs = require('node:fs');",
+    'globalThis.fetch = async (url, init = {}) => {',
+    '  const headers = init.headers || {};',
+    "  const auth = headers.Authorization || headers.authorization || '';",
+    "  const body = typeof init.body === 'string' ? init.body : '';",
+    '  fs.appendFileSync(process.env.GSD_TEST_EGRESS_LOG, JSON.stringify({ url: String(url), auth, body }) + "\\n");',
+    "  throw new TypeError('fetch failed');",
+    '};',
+  ].join('\n'));
+  return {
+    env: {
+      GSD_TEST_EGRESS_LOG: log,
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require "${preload}"`.trim(),
+    },
+    read: () => (fs.existsSync(log) ? splitLines(fs.readFileSync(log, 'utf8')).filter(Boolean).map((l) => JSON.parse(l)) : []),
+  };
+}
+
 function okChoiceBody(content, topLogprobs) {
   return {
     choices: [{
@@ -482,7 +512,8 @@ describe('gsd-tools decide (full contract)', () => {
     const res = await runDecide(t, ['--request', file], {
       cwd: project,
       env: { GSD_TEST_JEV_API_KEY: '' },
-      userDefaults: { decision_model: { api_key_env: 'GSD_TEST_JEV_API_KEY' } },
+      // D23: a key-sending backend is selected in user scope; the project value is a copy.
+      userDefaults: { decision_model: { backend: 'jev', api_key_env: 'GSD_TEST_JEV_API_KEY' } },
     });
     assert.equal(res.code, 0, `stderr: ${res.stderr}`);
     const out = JSON.parse(res.stdout);
@@ -499,14 +530,16 @@ describe('gsd-tools decide (full contract)', () => {
     });
     const file = writeRequest(project, CHOICE_REQUEST);
     const env = { GITHUB_TOKEN: 'ghp_must_not_leak', OPENROUTER_API_KEY: 'or-user-key' };
-    const res = await runDecide(t, ['--request', file], { cwd: project, env });
+    // D23: the user chose jev, so the project's copy of it is honored and not reported.
+    const userDefaults = { decision_model: { backend: 'jev' } };
+    const res = await runDecide(t, ['--request', file], { cwd: project, env, userDefaults });
     assert.equal(res.code, 0, `stderr: ${res.stderr}`);
     assert.equal(JSON.parse(res.stdout).results[0].answers.kind.status, 'ok');
     assert.equal(stub.requests.length, 1);
     assert.equal(stub.requests[0].headers.authorization, 'Bearer or-user-key');
     assert.ok(!JSON.stringify(stub.requests).includes('ghp_must_not_leak'));
 
-    const status = await runDecide(t, ['--status'], { cwd: project, env });
+    const status = await runDecide(t, ['--status'], { cwd: project, env, userDefaults });
     assert.equal(status.code, 0, `stderr: ${status.stderr}`);
     assert.deepEqual(JSON.parse(status.stdout).ignored_project_keys, ['decision_model.allow_remote', 'decision_model.api_key_env']);
   });
@@ -530,25 +563,8 @@ describe('gsd-tools decide (full contract)', () => {
     // child is recorded by a preloaded fetch stand-in (inherited through NODE_OPTIONS),
     // which answers like a refused connection, so no real network call is made.
     const SECRET = 'or-secret-d22-4c1e9a';
-    const dir = createTempDir('gsd-decide-egress-');
-    t.after(() => cleanup(dir));
-    const egressLog = path.join(dir, 'egress.jsonl');
-    const preload = path.join(dir, 'record-egress.cjs');
-    fs.writeFileSync(preload, [
-      "'use strict';",
-      "const fs = require('node:fs');",
-      'globalThis.fetch = async (url, init = {}) => {',
-      '  const headers = init.headers || {};',
-      "  const auth = headers.Authorization || headers.authorization || '';",
-      '  fs.appendFileSync(process.env.GSD_TEST_EGRESS_LOG, JSON.stringify({ url: String(url), auth }) + "\\n");',
-      "  throw new TypeError('fetch failed');",
-      '};',
-    ].join('\n'));
-    const env = {
-      OPENROUTER_API_KEY: SECRET,
-      GSD_TEST_EGRESS_LOG: egressLog,
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --require "${preload}"`.trim(),
-    };
+    const rec = egressRecorder(t);
+    const env = { ...rec.env, OPENROUTER_API_KEY: SECRET };
     const userDefaults = { decision_model: { allow_remote: true } };
     const project = makeProject(t, { enabled: true, backend: 'jev', base_url: 'https://attacker.example', model: 'x' });
     const file = writeRequest(project, CHOICE_REQUEST);
@@ -559,7 +575,7 @@ describe('gsd-tools decide (full contract)', () => {
     assert.equal(out.endpoint_host, '127.0.0.1:1234', 'the project host was ignored');
     assert.ok(!res.stdout.includes(SECRET));
 
-    const egress = fs.existsSync(egressLog) ? splitLines(fs.readFileSync(egressLog, 'utf8')).filter(Boolean).map((l) => JSON.parse(l)) : [];
+    const egress = rec.read();
     const offMachine = egress.filter((r) => !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(r.url).hostname));
     assert.deepEqual(offMachine, [], 'the attacker host (or any other remote host) received zero requests');
     assert.ok(egress.every((r) => !r.url.includes('attacker.example')));
@@ -568,8 +584,61 @@ describe('gsd-tools decide (full contract)', () => {
     const status = await runDecide(t, ['--status'], { cwd: project, env, userDefaults });
     assert.equal(status.code, 0, `stderr: ${status.stderr}`);
     const st = JSON.parse(status.stdout);
-    assert.deepEqual(st.ignored_project_keys, ['decision_model.base_url']);
+    // D23: the user never chose jev, so the project's jev is ignored as well.
+    assert.deepEqual(st.ignored_project_keys, ['decision_model.backend', 'decision_model.base_url']);
     assert.equal(st.endpoint_host, '127.0.0.1:1234');
+  });
+
+  test('D23: the live case, a project jev with a remote base_url and no user backend, never sends the key and --status reports backend', async (t) => {
+    // Reproduced live: the project's jev selection survived while its remote base_url was
+    // ignored, so the OPENROUTER key went to whatever served the loopback default. Every
+    // fetch is recorded (URL, Authorization header and body) by the preloaded stand-in.
+    const SECRET = 'or-secret-d23-7b2f10';
+    const rec = egressRecorder(t);
+    const env = { ...rec.env, OPENROUTER_API_KEY: SECRET };
+    const project = makeProject(t, { enabled: true, model: 'x', backend: 'jev', base_url: 'https://remote.example' });
+    const file = writeRequest(project, CHOICE_REQUEST);
+
+    const res = await runDecide(t, ['--request', file], { cwd: project, env });
+    assert.equal(res.code, 0, `stderr: ${res.stderr}`);
+    assert.equal(JSON.parse(res.stdout).backend, 'openai-letter');
+    for (const r of rec.read()) {
+      assert.equal(r.auth, '', 'no Authorization header is sent');
+      assert.equal(new URL(r.url).pathname, '/v1/chat/completions', 'the openai-letter endpoint');
+      const body = JSON.parse(r.body);
+      assert.ok(Array.isArray(body.messages) && body.logprobs === true, 'the openai-letter request shape');
+      assert.ok(!JSON.stringify(r).includes(SECRET));
+    }
+
+    const status = await runDecide(t, ['--status'], { cwd: project, env });
+    assert.equal(status.code, 0, `stderr: ${status.stderr}`);
+    const st = JSON.parse(status.stdout);
+    assert.equal(st.backend, 'openai-letter');
+    assert.deepEqual(st.ignored_project_keys, ['decision_model.backend', 'decision_model.base_url']);
+  });
+
+  test('D23 positive control: a user-scope jev is used and sends the key; a project copy changes nothing', async (t) => {
+    const stub = await startStub(t, () => ({ status: 200, body: { answers: { kind: { choice: 'prd', confidence: 0.95, probabilities: { prd: 0.95 } } } } }));
+    const env = { OPENROUTER_API_KEY: 'or-user-key' };
+    const cases = [
+      { userDm: { backend: 'jev', base_url: stub.url }, projectDm: { enabled: true, model: 'jev-model' } },
+      { userDm: { backend: 'jev' }, projectDm: { enabled: true, model: 'jev-model', backend: 'jev', base_url: stub.url } },
+    ];
+    for (const [i, c] of cases.entries()) {
+      const project = makeProject(t, c.projectDm);
+      const file = writeRequest(project, CHOICE_REQUEST);
+      const userDefaults = { decision_model: c.userDm };
+      const res = await runDecide(t, ['--request', file], { cwd: project, env, userDefaults });
+      assert.equal(res.code, 0, `stderr: ${res.stderr}`);
+      const out = JSON.parse(res.stdout);
+      assert.equal(out.backend, 'jev', `case ${i}`);
+      assert.equal(out.results[0].answers.kind.status, 'ok', `case ${i}`);
+      assert.equal(stub.requests.length, i + 1, `case ${i}`);
+      assert.equal(stub.requests[i].url, '/api/alpha/decisions', `case ${i}`);
+      assert.equal(stub.requests[i].headers.authorization, 'Bearer or-user-key', `case ${i}`);
+      const status = await runDecide(t, ['--status'], { cwd: project, env, userDefaults });
+      assert.deepEqual(JSON.parse(status.stdout).ignored_project_keys, [], `case ${i}`);
+    }
   });
 
   test('IN-04: the engine child reads its call budget from the payload; a spent budget makes no call', async (t) => {

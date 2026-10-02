@@ -487,6 +487,11 @@ function validateDecisionConfig(raw: unknown): ConfigValidation {
   };
 }
 
+/** D23: true when `id` names a registered backend whose calls carry an API key. */
+function sendsCredential(id: unknown): boolean {
+  return typeof id === 'string' && hasOwn(BACKENDS, id) && BACKENDS[id].sendsCredential;
+}
+
 /** True when two config values are the same JSON value (used to tell a copied user default from an override). */
 function sameConfigValue(a: unknown, b: unknown): boolean {
   return a === b || JSON.stringify(a) === JSON.stringify(b);
@@ -506,7 +511,16 @@ function sameConfigValue(a: unknown, b: unknown): boolean {
  * user-scope base_url (or the loopback default) stands in, and the project value
  * is listed in `ignored_project_keys` unless it equals the user-scope value. So a
  * cloned repository can never choose the remote host that receives the state or
- * the user's API key, whatever the backend. Every other key resolves as before.
+ * the user's API key, whatever the backend.
+ *
+ * D23: a backend that sends a credential (`sendsCredential` in BACKENDS, today
+ * jev) is honored only when the user chose it. A project or workstream backend
+ * that sends a credential and differs from the user-scope backend is ignored: the
+ * user-scope backend (or the default openai-letter) stands in, and the project
+ * value is listed in `ignored_project_keys`. A project may still pick a backend
+ * that sends none. With no project backend, the user-scope one is used. So a key
+ * is only ever sent because the user chose a key-sending backend. Every other key
+ * resolves as before.
  *
  * `ignored_project_keys` names a project value only when it differs from the
  * user-scope value in effect, so the copies of the user defaults that new projects
@@ -546,6 +560,20 @@ function resolveDecisionConfig(cwd: string): ConfigValidation {
         continue;
       }
       if (fromProject.found && !(fromUser.found && sameConfigValue(fromProject.value, fromUser.value))) ignored.push(dotKey);
+      raw[k] = fromUser.found ? fromUser.value : undefined;
+      continue;
+    }
+    if (k === 'backend') {
+      // D23. Presence is judged on the raw config.json files, as below.
+      const fromProject = resolveConfigKey(dotKey, { config: {}, cwd, registry: {}, quiet: true });
+      const fromUser = _getNestedConfigValue(userDefaults, dotKey);
+      const userValue = fromUser.found ? fromUser.value : CONFIG_DEFAULTS.backend;
+      const keySendingOverride = fromProject.found && sendsCredential(fromProject.value) && !sameConfigValue(fromProject.value, userValue);
+      if (fromProject.found && !keySendingOverride) {
+        raw[k] = fromProject.value;
+        continue;
+      }
+      if (keySendingOverride) ignored.push(dotKey);
       raw[k] = fromUser.found ? fromUser.value : undefined;
       continue;
     }

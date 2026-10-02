@@ -195,7 +195,8 @@ describe('D21 user-scope-only keys (CR-01)', () => {
     assert.equal(r.config.allow_remote, false, 'project allow_remote is not consent');
     assert.equal(r.config.api_key_env, 'OPENROUTER_API_KEY', 'project api_key_env is not honored');
     assert.equal(r.config.base_url, 'http://127.0.0.1:1234', 'D22: a project non-loopback base_url falls back to the loopback default');
-    const IGNORED = ['decision_model.base_url', 'decision_model.allow_remote', 'decision_model.api_key_env'];
+    assert.equal(r.config.backend, 'openai-letter', 'D23: a project cannot select a key-sending backend');
+    const IGNORED = ['decision_model.backend', 'decision_model.base_url', 'decision_model.allow_remote', 'decision_model.api_key_env'];
     assert.deepEqual(r.ignored_project_keys, IGNORED);
 
     const status = mod.statusSync({ cwd: project });
@@ -249,7 +250,8 @@ describe('D21 user-scope-only keys (CR-01)', () => {
   });
 
   test('a project api_key_env of GITHUB_TOKEN never reaches the Authorization header', async (t) => {
-    const project = scopes(t, { ...HOSTILE, base_url: 'http://127.0.0.1:9', allow_remote: false });
+    // D23: jev is chosen in user scope, so only the project api_key_env is hostile here.
+    const project = scopes(t, { ...HOSTILE, base_url: 'http://127.0.0.1:9', allow_remote: false }, { backend: 'jev' });
     const resolved = mod.resolveDecisionConfig(project);
     assert.equal(resolved.valid, true, resolved.problems.join('; '));
     const h = fakeHttp(() => ({ ok: true, status: 200, body: { answers: { n: { noul: 0.95 } } } }));
@@ -323,6 +325,59 @@ describe('D21 user-scope-only keys (CR-01)', () => {
     for (const bad of ['GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'ANTHROPIC_API_KEY_X', '_API_KEY', 'jev_api_key', 'API_KEY', '', 7]) {
       assert.equal(mod.validateDecisionConfig({ api_key_env: bad }).valid, false, String(bad));
     }
+  });
+});
+
+describe('D23 a credential-bearing backend is honored only from user scope', () => {
+  test('the registry marks which backends send a credential; the rule keys off that property, not a name', () => {
+    assert.equal(mod.BACKENDS.jev.sendsCredential, true);
+    assert.equal(mod.BACKENDS['openai-letter'].sendsCredential, false);
+  });
+
+  test('the live case: a project jev with no user backend falls back to openai-letter and is reported', (t) => {
+    const project = scopes(t, { enabled: true, model: 'x', backend: 'jev', base_url: 'https://remote.example' });
+    const r = mod.resolveDecisionConfig(project);
+    assert.equal(r.valid, true, r.problems.join('; '));
+    assert.equal(r.config.backend, 'openai-letter', 'a project cannot select a key-sending backend');
+    assert.equal(r.config.base_url, 'http://127.0.0.1:1234');
+    assert.deepEqual(r.ignored_project_keys, ['decision_model.backend', 'decision_model.base_url']);
+    const status = mod.statusSync({ cwd: project });
+    assert.equal(status.backend, 'openai-letter');
+    assert.deepEqual(status.ignored_project_keys, ['decision_model.backend', 'decision_model.base_url']);
+  });
+
+  test('a project jev is ignored when the user chose openai-letter explicitly', (t) => {
+    const r = mod.resolveDecisionConfig(scopes(t, { backend: 'jev' }, { backend: 'openai-letter' }));
+    assert.equal(r.config.backend, 'openai-letter');
+    assert.deepEqual(r.ignored_project_keys, ['decision_model.backend']);
+  });
+
+  test('a workstream jev is ignored like a root one', (t) => {
+    const project = scopes(t, { enabled: true, model: 'x' });
+    const prevWs = process.env.GSD_WORKSTREAM;
+    t.after(() => { if (prevWs === undefined) delete process.env.GSD_WORKSTREAM; else process.env.GSD_WORKSTREAM = prevWs; });
+    const wsDir = path.join(project, '.planning', 'workstreams', 'ws1');
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'config.json'), JSON.stringify({ decision_model: { backend: 'jev' } }));
+    process.env.GSD_WORKSTREAM = 'ws1';
+    const r = mod.resolveDecisionConfig(project);
+    assert.equal(r.config.backend, 'openai-letter');
+    assert.deepEqual(r.ignored_project_keys, ['decision_model.backend']);
+  });
+
+  test('positive control: a user-scope jev is used, with or without a project copy, and nothing is reported', (t) => {
+    const onlyUser = mod.resolveDecisionConfig(scopes(t, { enabled: true, model: 'x' }, { backend: 'jev' }));
+    assert.equal(onlyUser.config.backend, 'jev', 'the user-scope backend is read when the project sets none');
+    assert.deepEqual(onlyUser.ignored_project_keys, []);
+    const copied = mod.resolveDecisionConfig(scopes(t, { enabled: true, model: 'x', backend: 'jev' }, { backend: 'jev' }));
+    assert.equal(copied.config.backend, 'jev');
+    assert.deepEqual(copied.ignored_project_keys, [], 'a project value equal to the user value is not an override');
+  });
+
+  test('a project may still pick a backend that sends no credential (D23 limits only key-sending backends)', (t) => {
+    const r = mod.resolveDecisionConfig(scopes(t, { backend: 'openai-letter' }, { backend: 'jev' }));
+    assert.equal(r.config.backend, 'openai-letter');
+    assert.deepEqual(r.ignored_project_keys, []);
   });
 });
 
