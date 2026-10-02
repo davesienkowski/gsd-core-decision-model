@@ -233,7 +233,8 @@ const SITES = [
       'If any stubs exist, add a `## Known Stubs` section to the SUMMARY listing each stub with its file, line, and reason.',
       '- Placeholder text: "not available", "coming soon", "placeholder", "TODO", "FIXME"',
     ],
-    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank'],
+    // WR-03: the provenance run line never creates an empty Known Stubs section.
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank', 'never create an empty `## Known Stubs`'],
   },
   {
     file: 'agents/gsd-code-reviewer.md',
@@ -588,6 +589,14 @@ describe('decision-model-calls.md reference', () => {
       const granted = tools[1].split(',').map((x) => x.trim());
       assert.ok(granted.includes('Write') && granted.includes('Bash'), `${site.file} hosts a block but lacks Write or Bash (D26)`);
     }
+  });
+
+  test('WR-03: the executor run line goes to an existing section, never into a new empty Known Stubs section', () => {
+    const grep = subsection(readReference(), 'Grep-hit pre-rank');
+    const run = grep.split('\n').find((l) => l.startsWith('Run line'));
+    assert.ok(run, 'a Run line paragraph');
+    assert.ok(run.includes('`## Self-Check`'), 'the executor run line has a destination that always exists');
+    assert.ok(run.includes('never create an empty `## Known Stubs`'), 'the run line never creates an empty Known Stubs section');
   });
 
   test('WR-02: every agent-site prefix is fixed vocabulary plus a line number, within the stated character rule', () => {

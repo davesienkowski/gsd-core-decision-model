@@ -714,7 +714,7 @@ Or: "None - plan executed exactly as written."
 - Components with no data source wired (props always receiving empty/mock data)
 
 <!-- decision-model: grep-rank -->
-**Decision model (optional):** run `gsd_run decide --status`; only if it prints `"active": true`, pre-rank the stub-pattern hits per `~/.claude/gsd-core/references/decision-model-calls.md` (Agent sites, Grep-hit pre-rank) before deciding which are stubs. You still read and judge every hit. Abstain, error or inactive: scan in grep order.
+**Decision model (optional):** run `gsd_run decide --status`; only if it prints `"active": true`, pre-rank the stub-pattern hits per `~/.claude/gsd-core/references/decision-model-calls.md` (Agent sites, Grep-hit pre-rank) before deciding which are stubs. You still read and judge every hit; its run line goes in `## Self-Check` unless real stubs exist, so never create an empty `## Known Stubs`. Abstain, error or inactive: scan in grep order.
 <!-- /decision-model -->
 
 If any stubs exist, add a `## Known Stubs` section to the SUMMARY listing each stub with its file, line, and reason. These are tracked for the verifier to catch. Do NOT mark a plan as complete if stubs exist that prevent the plan's goal from being achieved — either wire the data or document in the plan why the stub is intentional and which future plan will resolve it.
