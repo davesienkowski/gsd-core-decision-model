@@ -835,6 +835,9 @@ describe('copyWithSameAsSuggestions (decision-model fallthrough, 261001-o30 D11 
   });
 
   const md = (items) => `# Learnings\n\n## Lessons\n\n${items.map(([t, b]) => `### ${t}\n${b}`).join('\n\n')}\n`;
+  // WR-04: the same lesson in other words, sharing only "network" with the seeded record
+  // (Jaccard 1/21), so the lexical method misses it and the model is asked.
+  const NEAR_MISS = md([['Network retries', 'When a remote request fails, wait longer before each new attempt and add randomness']]);
   const storeBytes = () => Object.fromEntries(
     fs.readdirSync(storeDir).map((f) => [f, fs.readFileSync(path.join(storeDir, f), 'utf-8')]),
   );
@@ -847,9 +850,7 @@ describe('copyWithSameAsSuggestions (decision-model fallthrough, 261001-o30 D11 
       learning: 'Retry network calls with exponential backoff and jitter',
     }, { storeDir });
     const before = storeBytes();
-    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), md([
-      ['Network retries', 'Use jitter and exponential backoff when retrying a flaky network call'],
-    ]), 'utf-8');
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), NEAR_MISS, 'utf-8');
 
     const decide = fakeSameDecide(OK_YES);
     const result = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide });
@@ -877,7 +878,9 @@ describe('copyWithSameAsSuggestions (decision-model fallthrough, 261001-o30 D11 
     context: 'Retry policy for flaky network calls',
     learning: 'Retry network calls with exponential backoff and jitter',
   }, { storeDir });
-  const PARAPHRASE = md([['Network retries', 'Use jitter and exponential backoff when retrying a flaky network call']]);
+  const PARAPHRASE = NEAR_MISS;
+  // Jaccard 5/13 with the seeded record: graduation.md already clusters this pair.
+  const LEXICAL_DUP = md([['Network retries', 'Use jitter and exponential backoff when retrying a flaky network call']]);
   const plainCounts = (r) => ({ total: r.total, created: r.created, skipped: r.skipped });
 
   test('an exact content-hash duplicate is still skipped and counted, and never asks the model', () => {
@@ -889,6 +892,14 @@ describe('copyWithSameAsSuggestions (decision-model fallthrough, 261001-o30 D11 
     assert.deepStrictEqual(second, { total: 1, created: 0, skipped: 1 });
     assert.strictEqual(decide.calls.length, 0);
     assert.strictEqual(learningsList({ storeDir }).length, 2);
+  });
+
+  test('WR-04: a pair the lexical method already clusters (Jaccard >= 0.25) is never asked about', () => {
+    seed();
+    fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), LEXICAL_DUP, 'utf-8');
+    const decide = fakeSameDecide(OK_YES);
+    assert.deepStrictEqual(copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide }), { total: 1, created: 1, skipped: 0 });
+    assert.strictEqual(decide.calls.length, 0);
   });
 
   test('no pre-existing candidate: no call and the result has no new keys', () => {
@@ -949,7 +960,7 @@ describe('copyWithSameAsSuggestions (decision-model fallthrough, 261001-o30 D11 
     learningsWrite({ source_project: 'other', context: 'E1', learning: 'alpha beta gamma' }, { storeDir });
     learningsWrite({ source_project: 'other', context: 'E2', learning: 'alpha beta delta' }, { storeDir });
     const items = [];
-    for (let i = 0; i < 13; i++) items.push([`New ${i}`, `alpha beta unique${i}x`]);
+    for (let i = 0; i < 13; i++) items.push([`New ${i}`, `alpha beta unique${i}x extra words`]);
     fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), md(items), 'utf-8');
     const no = fakeSameDecide(() => ({ status: 'ok', answer: 'no', p_yes: 0.05, confidence: 0.95 }));
     const result = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide: no });
@@ -965,7 +976,7 @@ describe('copyWithSameAsSuggestions (decision-model fallthrough, 261001-o30 D11 
     learningsWrite({ source_project: 'other', context: 'E1', learning: 'alpha beta gamma' }, { storeDir });
     learningsWrite({ source_project: 'other', context: 'E2', learning: 'alpha beta delta' }, { storeDir });
     const items = [];
-    for (let i = 0; i < 13; i++) items.push([`New ${i}`, `alpha beta unique${i}x`]);
+    for (let i = 0; i < 13; i++) items.push([`New ${i}`, `alpha beta unique${i}x extra words`]);
     fs.writeFileSync(path.join(projectDir, 'LEARNINGS.md'), md(items), 'utf-8');
     const abstain = fakeSameDecide(() => ({ status: 'abstain', reason: 'unreachable' }));
     const result = copyWithSameAsSuggestions(projectDir, { storeDir, sourceProject: 'app', decide: abstain });
@@ -1015,13 +1026,18 @@ describe('planSameAsDecisions (pure planner)', () => {
     assert.strictEqual(planSameAsDecisions([rec('c1', 'the', 'a an')], [rec('e1', 'the', 'a an')]), null, 'stop words only carry no tokens');
   });
 
-  test('top two existing by Jaccard, ties by existing id ascending, never a created record or itself', () => {
+  test('top two near-misses by Jaccard, ties by existing id ascending, never a created record or itself', () => {
+    // c1 / c2 tokens {x, y}. e1 {x, y, z} is 2/3 and e5 {x, k} is 1/3: both lexical hits, never asked.
+    // e2 {x, z, w} and e4 {x, z, v} are 1/4: also a hit. e3 {x, p, q, r} and e6 {x, s, t, u} are 1/5.
     const created = [rec('c1', 'x', 'y'), rec('c2', 'x', 'y')];
-    const existing = [rec('e4', 'x', 'w'), rec('e2', 'x', 'z'), rec('e1', 'x', 'y'), rec('e3', 'q', 'r'), created[0], created[1]];
+    const existing = [
+      rec('e1', 'x y', 'z'), rec('e5', 'x', 'k'), rec('e2', 'x z', 'w'), rec('e4', 'x z', 'v'),
+      rec('e6', 'x s', 't u'), rec('e3', 'x p', 'q r'), rec('e7', 'm', 'n'), created[0], created[1],
+    ];
     const plan = planSameAsDecisions(created, existing);
     assert.deepStrictEqual(plan.pairs, [
-      { id: 'c1', same_as: 'e1' }, { id: 'c2', same_as: 'e1' },
-      { id: 'c1', same_as: 'e2' }, { id: 'c2', same_as: 'e2' },
+      { id: 'c1', same_as: 'e3' }, { id: 'c1', same_as: 'e6' },
+      { id: 'c2', same_as: 'e3' }, { id: 'c2', same_as: 'e6' },
     ]);
     assert.strictEqual(plan.unchecked, 0);
     assert.deepStrictEqual(plan.request.requests.map((r) => r.id), ['p0', 'p1', 'p2', 'p3']);
@@ -1030,24 +1046,32 @@ describe('planSameAsDecisions (pure planner)', () => {
 
   test('ranked by Jaccard descending, state is the fixed two-part text, capped at 24 with the overflow counted', () => {
     const created = [];
-    for (let i = 0; i < 13; i++) created.push(rec(`c${String(i).padStart(2, '0')}`, 'alpha beta', `u${i}`));
-    const existing = [rec('e1', 'alpha beta', 'gamma'), rec('e2', 'alpha beta', 'delta')];
+    for (let i = 0; i < 13; i++) created.push(rec(`c${String(i).padStart(2, '0')}`, 'alpha beta', `u${i} v${i} w${i}`));
+    const existing = [rec('e1', 'alpha', 'gamma delta epsilon'), rec('e2', 'alpha', 'zeta eta theta')];
     const plan = planSameAsDecisions(created, existing);
     assert.strictEqual(plan.pairs.length, 24);
     assert.strictEqual(plan.unchecked, 2);
     assert.deepStrictEqual(plan.pairs.slice(0, 3), [
       { id: 'c00', same_as: 'e1' }, { id: 'c00', same_as: 'e2' }, { id: 'c01', same_as: 'e1' },
     ]);
-    assert.strictEqual(plan.request.requests[0].state, 'Learning A:\nalpha beta\nu0\n\nLearning B:\nalpha beta\ngamma');
+    assert.strictEqual(plan.request.requests[0].state, 'Learning A:\nalpha beta\nu0 v0 w0\n\nLearning B:\nalpha\ngamma delta epsilon');
     assert.strictEqual(plan.request.requests[0].questions.same.type, 'noul');
     assert.ok(Object.isFrozen(plan.request.requests[0].questions.same));
   });
 
-  test('a higher-Jaccard pair outranks a lower one regardless of id order', () => {
-    const created = [rec('c1', 'a b c d', 'e'), rec('c2', 'a b', 'c')];
-    const existing = [rec('e1', 'a', 'z1 z2 z3'), rec('e2', 'a b c d', 'e')];
+  test('WR-04: near-misses rank by overlap descending, so a pair just under 0.25 comes first, whatever the id order', () => {
+    // c2 {w, b} vs e2 {b, c, d, e} is 1/5; c1 {w, f} shares nothing with e2 and only 1/10 with e1.
+    // ("a" is a graduation.md stop word, so these fixtures use "w".)
+    const created = [rec('c1', 'w', 'f'), rec('c2', 'w', 'b')];
+    const existing = [rec('e1', 'w g h', 'i j k l m n'), rec('e2', 'b c', 'd e')];
     const plan = planSameAsDecisions(created, existing);
-    assert.deepStrictEqual(plan.pairs[0], { id: 'c1', same_as: 'e2' });
+    assert.deepStrictEqual(plan.pairs[0], { id: 'c2', same_as: 'e2' });
+  });
+
+  test('WR-04: the 0.25 boundary itself is a lexical hit; just below it is asked', () => {
+    // {w, b} vs {w, c, d} is exactly 1/4; {w, b} vs {w, c, d, e} is 1/5.
+    assert.strictEqual(planSameAsDecisions([rec('c1', 'w', 'b')], [rec('e1', 'w c', 'd')]), null);
+    assert.deepStrictEqual(planSameAsDecisions([rec('c1', 'w', 'b')], [rec('e1', 'w c', 'd e')]).pairs, [{ id: 'c1', same_as: 'e1' }]);
   });
 });
 

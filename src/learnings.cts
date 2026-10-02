@@ -17,7 +17,8 @@
  * Decision-model same-as suggestions (quick 261001-wzs, D11 site #9): `learningsCopyFromProject`
  * and its exact content-hash dedupe are unchanged. `copyWithSameAsSuggestions` wraps the copy and,
  * only when the optional decision-model capability is active, asks ONE batched question about the
- * newly created learnings versus the lexically closest pre-existing ones ("do these state the same
+ * newly created learnings versus the closest pre-existing ones the lexical (Jaccard) method does
+ * NOT already cluster, i.e. its near-misses ("do these state the same
  * lesson?"). The answer is ADD-ONLY: it appears as `same_as_suggestions` in the returned object
  * (each with a decided-by line). It never writes, merges, renames or deletes a store file, so a
  * human decides what to do with the suggestion (D7, D11).
@@ -117,6 +118,13 @@ const MAX_SAME_AS_PAIRS = 24;
 
 /** Closest pre-existing learnings considered per new learning. */
 const SAME_AS_CANDIDATES_PER_LEARNING = 2;
+
+/**
+ * graduation.md Step 3 clusters two items when their Jaccard similarity is at least 0.25. A pair at
+ * or above it is the lexical method's own hit, so the model is asked only about pairs below it
+ * (D11 site #9: "pairs the lexical method missed").
+ */
+const LEXICAL_CLUSTER_THRESHOLD = 0.25;
 
 /** The fixed same-as question. The untrusted learning text goes only in the request `state` (ADR-1577). */
 const SAME_AS_QUESTION = Object.freeze({
@@ -410,10 +418,14 @@ function pairState(a: LearningRecord, b: LearningRecord): string {
 }
 
 /**
- * Pure planner. For each newly created learning takes the top two pre-existing learnings by Jaccard
- * (above 0) over context plus learning tokens; a new learning is never paired with itself or with
- * another learning created in the same copy. Pairs are ranked by Jaccard descending, then new id,
- * then existing id ascending, and capped at {@link MAX_SAME_AS_PAIRS}. Returns null for no pairs.
+ * Pure planner for near-misses (WR-04). A pair the lexical method already clusters (Jaccard at or
+ * above {@link LEXICAL_CLUSTER_THRESHOLD}) is never asked about. For each newly created learning it
+ * takes the top two pre-existing learnings by Jaccard over context plus learning tokens among the
+ * rest; a new learning is never paired with itself or with another learning created in the same
+ * copy. Pairs are ranked by Jaccard descending, so pairs just under the threshold come first, then
+ * new id, then existing id ascending, and capped at {@link MAX_SAME_AS_PAIRS}. Returns null for no
+ * pairs. Known recall gap: a pair sharing no token at all (a full paraphrase or another language)
+ * is never a candidate, because there is no overlap to rank it by.
  */
 function planSameAsDecisions(created: LearningRecord[], existing: LearningRecord[]): SameAsPlan | null {
   if (created.length === 0 || existing.length === 0) return null;
@@ -427,7 +439,7 @@ function planSameAsDecisions(created: LearningRecord[], existing: LearningRecord
     const candidates: Array<{ b: LearningRecord; sim: number }> = [];
     pool.forEach((b, i) => {
       const sim = jaccard(aTokens, poolTokens[i]);
-      if (sim > 0) candidates.push({ b, sim });
+      if (sim > 0 && sim < LEXICAL_CLUSTER_THRESHOLD) candidates.push({ b, sim });
     });
     candidates.sort((x, y) => y.sim - x.sim || (x.b.id < y.b.id ? -1 : x.b.id > y.b.id ? 1 : 0));
     for (const c of candidates.slice(0, SAME_AS_CANDIDATES_PER_LEARNING)) {
