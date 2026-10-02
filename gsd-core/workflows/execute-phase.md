@@ -1034,7 +1034,7 @@ increases monotonically across waves. `{status}` is `complete` (success),
    **Step 7.2 — `class == "classify-handoff-bug"`:**
    If error contains `classifyHandoffIfNeeded is not defined`, treat as Claude runtime bug. Run the same step-5 spot-checks; PASS => treat as success, FAIL => fall through.
    **Step 7.3 — `class == "unknown-failure"`:**
-   Report failed plan and ask Continue/Stop; continuing may cascade into dependent plan failures.
+   Report failed plan and ask Continue/Stop; continuing may cascade into dependent plan failures. If `CLASS_JSON` has `.model_suggestion`, also show `Model suggestion: {class} ({decided_by})` as a hint only; never recover or escalate on it.
 
 @~/.claude/gsd-core/references/execute-phase-quota-recovery.md
 

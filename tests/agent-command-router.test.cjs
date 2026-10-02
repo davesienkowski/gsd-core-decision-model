@@ -40,12 +40,12 @@ function fakeDecide(answer, backend = 'openai-letter') {
 }
 
 describe('agent-command-router: decision-model fallthrough (261001-o30 D11 site #14)', () => {
-  test('an unknown-failure body the model calls quota-exceeded is reclassified with its decided-by line', () => {
+  test('WR-03: a model quota-exceeded answer is only a suggestion; the class stays unknown-failure', () => {
     assert.equal(typeof router.classifyAgentFailureWithModel, 'function');
     assert.deepEqual(router.classifyAgentFailure(UNKNOWN_BODY), { class: 'unknown-failure' });
     const decide = fakeDecide({ status: 'ok', choice: 'quota-exceeded', confidence: 0.93 });
     const out = router.classifyAgentFailureWithModel(UNKNOWN_BODY, { decide });
-    assert.deepEqual(out, { class: 'quota-exceeded', sentinel: LINE, decided_by: LINE });
+    assert.deepEqual(out, { class: 'unknown-failure', model_suggestion: { class: 'quota-exceeded', decided_by: LINE } });
     assert.equal(decide.calls.length, 1);
     assert.equal(decide.calls[0].requests.length, 1);
     const req = decide.calls[0].requests[0];
@@ -55,11 +55,11 @@ describe('agent-command-router: decision-model fallthrough (261001-o30 D11 site 
     assert.deepEqual(Object.keys(req.questions.failure.criteria), ['quota-exceeded', 'other']);
   });
 
-  test('retry-after in the body is carried onto a model-reclassified quota failure', () => {
+  test('WR-03: a model suggestion carries no sentinel or retry-after, so nothing in the quota path keys on it', () => {
     const body = `${UNKNOWN_BODY}\nretry-after: 30`;
     const decide = fakeDecide({ status: 'ok', choice: 'quota-exceeded', confidence: 0.93 });
     assert.deepEqual(router.classifyAgentFailureWithModel(body, { decide }), {
-      class: 'quota-exceeded', sentinel: LINE, decided_by: LINE, retryAfterSeconds: 30,
+      class: 'unknown-failure', model_suggestion: { class: 'quota-exceeded', decided_by: LINE },
     });
   });
 
@@ -172,6 +172,40 @@ describe('agent-command-router: query agent.classify-failure stays deterministic
     assert.equal(on.r.exitCode, 0, on.r.stderr);
     assert.equal(on.r.stdout, off.r.stdout);
     assert.deepEqual(JSON.parse(on.r.stdout), { class: 'unknown-failure' });
+  });
+
+  test('WR-03: with provider_escalation configured, a model quota answer still takes the unknown path (no escalation)', async (t) => {
+    const { startLetterStub } = require('./helpers/decision-model-stub.cjs');
+    const stub = await startLetterStub(() => 'quota-exceeded');
+    t.after(() => stub.close());
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-agent-esc-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-agent-esc-home-'));
+    t.after(() => { cleanup(dir); cleanup(home); });
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({
+      decision_model: { enabled: true, model: 'fake-model', base_url: stub.url, timeout_ms: 5000 },
+      dynamic_routing: { enabled: true, provider_escalation: ['other-provider/model-x'], max_escalations: 1 },
+    }));
+    const env = { ...process.env, ...TEST_ENV_BASE, HOME: home, USERPROFILE: home, GSD_HOME: home };
+    // Async: the stub answers from this process's event loop, which a sync spawn would block.
+    const { execFile } = require('node:child_process');
+    const tools = (args) => new Promise((resolve) => {
+      execFile(process.execPath, [TOOLS, 'query', ...args], { cwd: dir, env, timeout: PROBE_TIMEOUT_MS, encoding: 'utf8' },
+        (err, stdout, stderr) => resolve({ exitCode: err ? err.code : 0, stdout, stderr }));
+    });
+    const r = await tools(['agent.classify-failure', '--', UNKNOWN_BODY]);
+    assert.equal(r.exitCode, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(stub.hits, 1, 'the model was consulted once through the real engine');
+    assert.equal(out.class, 'unknown-failure', 'Step 7.1 (and its 7.1a escalation) is entered only on class quota-exceeded');
+    assert.equal(out.model_suggestion.class, 'quota-exceeded');
+    assert.match(out.model_suggestion.decided_by, /^decided-by: decision-model \(conf \d\.\d\d, backend openai-letter\)$/);
+    assert.equal('sentinel' in out, false);
+    // Positive control: this config really does escalate a quota-exceeded class, so the test is not vacuous.
+    const quota = JSON.parse((await tools(['resolve-execution', 'gsd-executor', '--attempt', '1', '--failure-class', 'quota-exceeded'])).stdout);
+    assert.equal(quota.escalation.escalated, true);
+    const asClassified = JSON.parse((await tools(['resolve-execution', 'gsd-executor', '--attempt', '1', '--failure-class', out.class])).stdout);
+    assert.equal(asClassified.escalation.escalated, false);
   });
 
   test('the existing quota sentinel case is unchanged', (t) => {

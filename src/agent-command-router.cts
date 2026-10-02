@@ -8,11 +8,12 @@
  * Decision-model fallthrough (quick 261001-wzs, D11 site #14): `classifyAgentFailure` stays the pure
  * deterministic classifier. `classifyAgentFailureWithModel` wraps it and consults the optional
  * decision-model capability ONLY when the base class is `unknown-failure` and the body is
- * non-empty. A sentinel hit never asks the model. Only an ok `quota-exceeded` answer (at or above
- * the engine's confidence floor) changes the result, and its decided-by line is shown as the
- * `sentinel` so the existing quota banner prints the provenance (D14); every other outcome is the
- * deterministic `unknown-failure`. A reclassified quota failure still passes the quota-recovery
- * path's own spot-check and opt-in provider-escalation config (nothing there changes).
+ * non-empty. A sentinel hit never asks the model. The model never changes the class (WR-03, D11,
+ * D19): an ok `quota-exceeded` answer (at or above the engine's confidence floor) is attached as
+ * `model_suggestion: { class, decided_by }` on the unchanged `unknown-failure` result, so the
+ * workflow still takes today's unknown path (report and ask Continue/Stop) and only SHOWS the
+ * suggestion with its provenance (D14). A model answer can therefore never trigger the automatic
+ * quota recovery or provider-escalation re-dispatch, which key on the class alone.
  */
 
 import {
@@ -35,8 +36,6 @@ type QuotaExceededResult = {
   class: 'quota-exceeded';
   sentinel: string;
   retryAfterSeconds?: number;
-  /** Present only when the decision model (not a sentinel) produced the class (D14). */
-  decided_by?: string;
 };
 
 type ClassifyHandoffBugResult = {
@@ -46,6 +45,8 @@ type ClassifyHandoffBugResult = {
 
 type UnknownFailureResult = {
   class: 'unknown-failure';
+  /** WR-03: a decision-model suggestion to SHOW the user; never acted on (the class is unchanged). */
+  model_suggestion?: { class: 'quota-exceeded'; decided_by: string };
 };
 
 type AgentFailureResult = QuotaExceededResult | ClassifyHandoffBugResult | UnknownFailureResult;
@@ -140,8 +141,9 @@ const FAILURE_QUESTION: Readonly<DecisionQuestion> = Object.freeze({
 /**
  * `classifyAgentFailure` plus the optional decision-model fallthrough (D11 site #14, D14, D18).
  * Returns the deterministic result untouched unless it is `unknown-failure` for a non-empty body.
- * Then makes ONE decide call (id f0, state = the full body verbatim) and reclassifies only on an
- * ok `quota-exceeded` answer; abstain, `other`, null or garbage all return the base result.
+ * Then makes ONE decide call (id f0, state = the full body verbatim). Only an ok `quota-exceeded`
+ * answer adds anything: a `model_suggestion` on the still-`unknown-failure` result (WR-03).
+ * Abstain, `other`, null or garbage all return the base result.
  */
 function classifyAgentFailureWithModel(body: unknown, opts: DecideOpts = {}): AgentFailureResult {
   const base = classifyAgentFailure(body);
@@ -154,11 +156,10 @@ function classifyAgentFailureWithModel(body: unknown, opts: DecideOpts = {}): Ag
   const response = decide({ requests: [{ id: 'f0', state: text, questions: { failure: FAILURE_QUESTION } }] });
   const answer = answerOf(answersFor(response, 'f0'), 'failure');
   if (okChoice(answer) !== AGENT_FAILURE_CLASSES.QUOTA_EXCEEDED) return base;
-  const line = decidedBy(answer, response);
-  const retryAfterSeconds = parseRetryAfter(body);
-  return retryAfterSeconds === undefined
-    ? { class: AGENT_FAILURE_CLASSES.QUOTA_EXCEEDED, sentinel: line, decided_by: line }
-    : { class: AGENT_FAILURE_CLASSES.QUOTA_EXCEEDED, sentinel: line, decided_by: line, retryAfterSeconds };
+  return {
+    class: AGENT_FAILURE_CLASSES.UNKNOWN_FAILURE,
+    model_suggestion: { class: AGENT_FAILURE_CLASSES.QUOTA_EXCEEDED, decided_by: decidedBy(answer, response) },
+  };
 }
 
 function routeAgentCommand({ args, cwd, raw }: RouteAgentCommandOptions): void {
