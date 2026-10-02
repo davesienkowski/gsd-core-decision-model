@@ -253,7 +253,14 @@ interface DecideDeps {
    * from the payload's budget_ms on its own monotonic clock (IN-03).
    */
   deadline?: number;
-  /** The clock `deadline` is read against; defaults to Date.now. The child passes performance.now. */
+  /**
+   * D24: an overall budget in milliseconds, measured on the `now` clock from the
+   * start of this call. It sets the same kind of deadline (the earlier one wins when
+   * both are given): questions are asked in order, each call is clipped to the time
+   * left, and the questions not reached abstain timeout.
+   */
+  budgetMs?: number;
+  /** The clock `deadline` and `budgetMs` are read against; defaults to Date.now. The child passes performance.now. */
   now?: () => number;
 }
 
@@ -1271,13 +1278,16 @@ async function decide(request: unknown, deps: DecideDeps): Promise<DecisionRespo
   const results: DecisionResponse['results'] = [];
   const now = deps.now ?? Date.now;
   const outOfTime: BackendOutcome = { ok: false, reason: ABSTAIN_REASON.TIMEOUT, httpStatus: null };
+  // D24: a budget becomes a deadline on the same clock; the earlier of the two wins.
+  const fromBudget = typeof deps.budgetMs === 'number' && Number.isFinite(deps.budgetMs) ? now() + Math.max(0, deps.budgetMs) : undefined;
+  const deadline = fromBudget === undefined ? deps.deadline : Math.min(fromBudget, deps.deadline ?? Infinity);
 
   /** WR-01: the context for the next call, its timeout clipped to the deadline, or null when out of time. */
   const nextCtx = (): BackendContext | null => {
-    if (deps.deadline === undefined) return ctx;
+    if (deadline === undefined) return ctx;
     // Whole milliseconds: the child's clock is performance.now(), and AbortSignal.timeout
     // throws on a fractional delay, which would turn every clipped call into unreachable.
-    const left = Math.floor(deps.deadline - now());
+    const left = Math.floor(deadline - now());
     if (left < Math.min(MIN_CALL_MS, ctx.config.timeout_ms)) return null;
     return left >= ctx.config.timeout_ms ? ctx : { ...ctx, config: { ...ctx.config, timeout_ms: left } };
   };
@@ -1372,10 +1382,12 @@ type SpawnFn = (cmd: string, args: string[], opts: Json) => SpawnResultLike;
 interface DecideSyncOpts {
   cwd: string;
   /**
-   * D24: an overall budget in milliseconds for this invocation. When it is smaller
-   * than the natural one, the child gets it as its call deadline (calls clipped to
-   * the time left, the rest abstain timeout) and is killed SPAWN_MARGIN_MS after it.
-   * Less than one call's minimum starts no child: every dispatchable question abstains timeout.
+   * D24: an overall budget in milliseconds for this invocation. When it is tighter
+   * than the natural spawn budget, the child is killed at it, and its own call
+   * deadline ends budgetMargin(budgetMs) earlier, so it returns the answers it has
+   * (questions in order, calls clipped to the time left, the rest abstain timeout)
+   * before the kill. A budget too small for one call starts no child: every
+   * dispatchable question abstains timeout.
    */
   budgetMs?: number;
   _spawn?: SpawnFn;
@@ -1468,6 +1480,15 @@ function appendLog(
  * config, then runs the async engine in a bounded child. Never throws for an
  * abstain condition; throws the TypeError only for a malformed request.
  */
+/**
+ * D24: the part of a caller's budget kept between the child's call deadline and the
+ * kill, for the child to start, finish its clipped call and write its answers: a
+ * quarter of the budget, at least 250 ms and at most SPAWN_MARGIN_MS.
+ */
+function budgetMargin(budgetMs: number): number {
+  return Math.min(SPAWN_MARGIN_MS, Math.max(250, Math.floor(budgetMs / 4)));
+}
+
 /** The resolved config with the capability gate applied to `enabled`. */
 function effectiveConfig(cwd: string): ConfigValidation {
   const resolved = resolveDecisionConfig(cwd);
@@ -1495,7 +1516,9 @@ function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
 
   const overall = typeof opts.budgetMs === 'number' && Number.isFinite(opts.budgetMs) ? Math.max(0, Math.floor(opts.budgetMs)) : undefined;
   // D24: an overall budget too small for one call starts no child.
-  if (overall !== undefined && overall < Math.min(MIN_CALL_MS, cfg.config.timeout_ms)) return without(ABSTAIN_REASON.TIMEOUT);
+  if (overall !== undefined && overall - budgetMargin(overall) < Math.min(MIN_CALL_MS, cfg.config.timeout_ms)) {
+    return without(ABSTAIN_REASON.TIMEOUT);
+  }
 
   const spawn: SpawnFn = opts._spawn ?? (spawnSync as unknown as SpawnFn);
   const uncapped = cfg.config.timeout_ms * calls + SPAWN_MARGIN_MS;
@@ -1507,11 +1530,12 @@ function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
   // start, so a wall-clock step (common on WSL2 after sleep) cannot move its deadline.
   // Its start-up time is covered by the margin.
   let budgetMs = uncapped > MAX_SPAWN_BUDGET_MS ? budget - SPAWN_MARGIN_MS : undefined;
-  // D24: a caller's overall budget that is tighter becomes the child's deadline, and
-  // the kill follows it by the same margin.
-  if (overall !== undefined && overall < budget - SPAWN_MARGIN_MS) {
-    budgetMs = overall;
-    budget = overall + SPAWN_MARGIN_MS;
+  // D24: a caller's overall budget that is tighter than the natural one is the kill,
+  // and the child's call deadline ends budgetMargin earlier, so its partial answers
+  // come back within the budget.
+  if (overall !== undefined && overall < budget) {
+    budget = overall;
+    budgetMs = overall - budgetMargin(overall);
   }
   let res: SpawnResultLike;
   try {

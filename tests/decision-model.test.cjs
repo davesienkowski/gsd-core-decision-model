@@ -1472,8 +1472,8 @@ describe('D24 items mode engine (decideItemsSync)', () => {
     const spawn = (cmd, args, opts) => { const out = rec.spawn(cmd, args, opts); clock += 4000; return out; };
     const r = mod.decideItemsSync({ a: NOUL2.a }, items, { cwd: project, budgetMs: 6000, _spawn: spawn, now: () => clock });
     assert.equal(rec.payloads.length, 2, 'the third chunk found the budget spent');
-    assert.deepEqual(rec.payloads.map((p) => p.payload.budget_ms), [6000, 2000]);
-    assert.deepEqual(rec.payloads.map((p) => p.timeout), [11000, 7000], 'the kill follows the budget by the 5 s margin');
+    assert.deepEqual(rec.payloads.map((p) => p.timeout), [6000, 2000], 'each child is killed at the budget left');
+    assert.deepEqual(rec.payloads.map((p) => p.payload.budget_ms), [4500, 1500], 'its call deadline ends a quarter earlier');
     assert.ok(r.results.slice(0, 480).every((x) => x.answers.a.status === 'ok'));
     assert.ok(r.results.slice(480).every((x) => x.answers.a.reason === 'timeout'));
     assert.equal(r.results.length, 600);
@@ -1550,5 +1550,96 @@ describe('D25 a credential-bearing backend takes base_url from user scope only, 
     assert.equal(payload.config.backend, 'jev');
     assert.equal(payload.config.base_url, 'http://127.0.0.1:7001');
     assert.ok(!JSON.stringify(payload).includes('5999'));
+  });
+});
+
+describe('D24 library budget (budgetMs)', () => {
+  const noul = (i) => ({ type: 'noul', instructions: `Q${i}?` });
+  const yes = (call) => {
+    const options = optionsOf(call);
+    const y = options.find((o) => o.key === 'yes');
+    const n = options.find((o) => o.key === 'no');
+    return { ok: true, status: 200, body: completion(y.label, [{ token: y.label, logprob: Math.log(0.97) }, { token: n.label, logprob: Math.log(0.03) }]) };
+  };
+
+  test('async decide: budgetMs answers in order, clips calls to the time left, and the rest abstain timeout', async () => {
+    let clock = 100;
+    const h = fakeHttp((call) => { clock += 1000; return yes(call); });
+    const r = await mod.decide(
+      req({ q1: noul(1), q2: noul(2), q3: noul(3) }),
+      { config: cfg({ timeout_ms: 30000 }), http: h.http, budgetMs: 2500, now: () => clock },
+    );
+    const a = r.results[0].answers;
+    assert.equal(a.q1.status, 'ok');
+    assert.equal(a.q2.status, 'ok');
+    assert.deepEqual(a.q3, { status: 'abstain', reason: 'timeout' });
+    assert.deepEqual(h.calls.map((c) => c.timeoutMs), [2500, 1500]);
+  });
+
+  test('async decide: the earlier of deadline and budgetMs wins', async () => {
+    for (const [deadline, budgetMs, want] of [[1500, 9000, [1500]], [9000, 1200, [1200]]]) {
+      const h = fakeHttp(yes);
+      await mod.decide(req({ q1: noul(1) }), { config: cfg({ timeout_ms: 30000 }), http: h.http, deadline, budgetMs, now: () => 0 });
+      assert.deepEqual(h.calls.map((c) => c.timeoutMs), want, `deadline ${deadline}, budget ${budgetMs}`);
+    }
+  });
+
+  test('decideSync: the child is killed at the budget and its call deadline ends a quarter earlier', (t) => {
+    const { project } = syncProject(t, { timeout_ms: 30000, log_path: '' });
+    const seen = [];
+    mod.decideSync(TWO_Q, { cwd: project, budgetMs: 60000, _spawn: (cmd, args, opts) => { seen.push({ input: JSON.parse(opts.input), timeout: opts.timeout }); return { status: 1 }; } });
+    assert.equal(seen[0].timeout, 60000);
+    assert.equal(seen[0].input.budget_ms, 55000, 'a 5 s margin at most');
+    const loose = [];
+    mod.decideSync(TWO_Q, { cwd: project, budgetMs: 500000, _spawn: (cmd, args, opts) => { loose.push({ input: JSON.parse(opts.input), timeout: opts.timeout }); return { status: 1 }; } });
+    assert.equal(loose[0].timeout, 65000, 'a budget looser than the natural one changes nothing');
+    assert.equal(loose[0].input.budget_ms, undefined);
+    let spawned = 0;
+    const r = mod.decideSync(TWO_Q, { cwd: project, budgetMs: 1200, _spawn: () => { spawned += 1; return { status: 1 }; } });
+    assert.equal(spawned, 0, 'a budget too small for one call starts no child');
+    assert.deepEqual(r.results[0].answers.q1, { status: 'abstain', reason: 'timeout' });
+  });
+
+  test('decideSync against a slow server returns within its budget with the answers reached ok and the rest timeout', async (t) => {
+    // The server answers each call after 250 ms. decideSync blocks its own event loop,
+    // so it runs in a subprocess while this process serves; the subprocess is killed at
+    // the budget plus 5 s, so returning late is an observable kill, not a timing check.
+    const http = require('node:http');
+    const { execFile } = require('node:child_process');
+    const requests = [];
+    const server = http.createServer((rq, rs) => {
+      const chunks = [];
+      rq.on('data', (c) => chunks.push(c));
+      rq.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        requests.push(body);
+        const call = { body };
+        const out = yes(call);
+        setTimeout(() => { if (!rs.destroyed) { rs.writeHead(200, { 'content-type': 'application/json' }); rs.end(JSON.stringify(out.body)); } }, 250).unref();
+      });
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); });
+    const { project } = syncProject(t, { base_url: `http://127.0.0.1:${server.address().port}`, timeout_ms: 30000, log_path: '' });
+    const questions = Object.fromEntries(Array.from({ length: 40 }, (_, k) => [`q${k + 1}`, noul(k + 1)]));
+    const BUDGET = 3000;
+    const script = [
+      `const mod = require(${JSON.stringify(require.resolve('../gsd-core/bin/lib/decision-model.cjs'))});`,
+      `const r = mod.decideSync({ state: 's', questions: ${JSON.stringify(questions)} }, { cwd: ${JSON.stringify(project)}, budgetMs: ${BUDGET} });`,
+      'process.stdout.write(JSON.stringify(r));',
+    ].join('\n');
+    const run = await new Promise((resolve) => {
+      execFile(process.execPath, ['-e', script], { env: { ...process.env, GSD_HOME: process.env.GSD_HOME }, timeout: BUDGET + 5000, killSignal: 'SIGKILL' },
+        (err, stdout) => resolve({ killed: err !== null && err.signal === 'SIGKILL', err, stdout: String(stdout) }));
+    });
+    assert.equal(run.killed, false, 'decideSync returned before the budget plus 5 s');
+    assert.equal(run.err, null, String(run.err));
+    const answers = JSON.parse(run.stdout).results[0].answers;
+    const statuses = Object.keys(questions).map((k) => (answers[k].status === 'ok' ? 'ok' : answers[k].reason));
+    const firstLate = statuses.indexOf('timeout');
+    assert.equal(statuses[0], 'ok', statuses.join(','));
+    assert.ok(firstLate > 0, `some questions ran out of budget: ${statuses.join(',')}`);
+    assert.ok(statuses.slice(firstLate).every((st) => st === 'timeout'), statuses.join(','));
+    assert.ok(requests.length < 40, `${requests.length} calls reached the server`);
   });
 });
