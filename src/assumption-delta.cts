@@ -55,6 +55,7 @@ import {
   okChoice,
   decidedBy,
   resolveSiteDecide,
+  siteBudgetMs,
 } from './decision-model-fallthrough.cjs';
 
 export type AssumptionDeltaKind = 'pluralization' | 'optional' | 'chosen';
@@ -257,7 +258,8 @@ const MODEL_DELTA_KINDS: ReadonlySet<string> = new Set<AssumptionDeltaKind>(['pl
  * `detectAssumptionDelta` plus the optional decision-model fallthrough (D11 site #1, D14, D18).
  * Returns the deterministic result untouched when it already detected, when `text` is not a string
  * or is blank after fence-stripping, when the capability is inactive, or on any non-ok answer.
- * Otherwise makes ONE decide call (id d0, state = the fence-stripped text the regex scanned).
+ * Otherwise makes ONE decide call (id d0, state = the fence-stripped text the regex scanned) under the
+ * 60 s site budget (`budgetMs`), so a slow backend cannot hold the plan-phase shell call.
  */
 export function detectAssumptionDeltaWithModel(
   text: unknown,
@@ -270,7 +272,10 @@ export function detectAssumptionDeltaWithModel(
   if (stripped.trim().length === 0) return base;
   const decide = resolveSiteDecide(opts);
   if (decide === null) return base;
-  const response = decide({ requests: [{ id: 'd0', state: stripped, questions: { delta: DELTA_QUESTION } }] });
+  const response = decide(
+    { requests: [{ id: 'd0', state: stripped, questions: { delta: DELTA_QUESTION } }] },
+    { budgetMs: siteBudgetMs() },
+  );
   const answer = answerOf(answersFor(response, 'd0'), 'delta');
   const choice = okChoice(answer);
   if (choice === null || !MODEL_DELTA_KINDS.has(choice)) return base;

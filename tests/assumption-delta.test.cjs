@@ -426,8 +426,10 @@ describe('detectAssumptionDeltaWithModel — decision-model fallthrough (261001-
 
   function fakeDecide(answerFor) {
     const calls = [];
-    const decide = (request) => {
+    const limitsSeen = [];
+    const decide = (request, limits) => {
       calls.push(request);
+      limitsSeen.push(limits);
       const v = validateRequest(request);
       assert.equal(v.ok, true, `fake decide got an invalid D18 request: ${v.message}`);
       return {
@@ -438,7 +440,7 @@ describe('detectAssumptionDeltaWithModel — decision-model fallthrough (261001-
         results: request.requests.map((r) => ({ id: r.id, answers: answerFor(r) })),
       };
     };
-    return { decide, calls };
+    return { decide, calls, limitsSeen };
   }
   const choose = (choice, confidence = 0.92) => () => ({ delta: { status: 'ok', choice, confidence, probabilities: { [choice]: confidence } } });
 
@@ -462,6 +464,13 @@ describe('detectAssumptionDeltaWithModel — decision-model fallthrough (261001-
     assert.equal(r.detected, true);
     assert.deepStrictEqual(r.signals, [{ kind: 'optional', term: '', snippet: '', proposed_by: 'decision-model', decided_by: LINE }]);
     assert.deepStrictEqual(r.terms, base.terms);
+  });
+
+  test('the one decide call carries the site budget as budgetMs (W1)', () => {
+    const { decide, calls, limitsSeen } = fakeDecide(choose('optional'));
+    detectAssumptionDeltaWithModel(SPANISH, undefined, { decide });
+    assert.equal(calls.length, 1);
+    assert.deepStrictEqual(limitsSeen, [{ budgetMs: 60000 }]);
   });
 
   test('the request state is the fence-stripped, CRLF-normalized text', () => {
