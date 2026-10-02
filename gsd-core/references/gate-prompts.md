@@ -9,6 +9,9 @@ Reusable prompt patterns for structured gate checks in workflows and agents.
 - `header` must be max 12 characters
 - `multiSelect` is always `false` for gate checks
 - Always handle the "Other" case (user typed a freeform response instead of selecting)
+<!-- decision-model: gate-reply -->
+- **Decision model (optional):** for the "Other" case, run `gsd_run decide --status` once per run; only if it prints `"active": true`, map the typed reply to one offered option or `none` per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: gate-reply`). Echo the mapped option with its `decided-by:` line and act on it only after the user says yes. Never for a `blocking-human` gate or a destructive option. `none`, abstain, a "no", or inactive: handle the reply as today.
+<!-- /decision-model -->
 - Max 4 options per prompt -- if more are needed, use a 2-step flow
 
 ---

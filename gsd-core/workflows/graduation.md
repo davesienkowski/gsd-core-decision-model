@@ -83,6 +83,10 @@ graduation_backlog:
 
 **Skip any cluster whose `cluster_id` matches a `deferred` entry where `deferred_until` phase has not yet completed.**
 
+<!-- decision-model: lesson-dedupe -->
+**Decision model (optional):** add-only. Run `gsd_run decide --status`; only if it prints `"active": true`, ask per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: lesson-dedupe`) whether same-category cluster pairs that Step 3 kept apart and Step 4 did not skip state the same lesson. Each `ok` "yes" becomes a same-as suggestion in the Step 5 report with its `decided-by:` line; in Step 6 ask "Treat as one cluster? [Y/N]" before its P/D/X/A. Y merges the pair for this run; N or any other answer keeps them apart. Jaccard clustering and the Step 4 skips are unchanged.
+<!-- /decision-model -->
+
 ---
 
 ## Step 5: Surface Promotion Candidates

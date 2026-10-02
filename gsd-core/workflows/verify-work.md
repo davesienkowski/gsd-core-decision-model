@@ -397,6 +397,10 @@ Wait for user response (plain text, no AskUserQuestion).
 <step name="process_response">
 **Process user response and update file:**
 
+<!-- decision-model: uat-reply -->
+**Decision model (optional):** run `gsd_run decide --status` once per session; only if it prints `"active": true`, Read `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: uat-reply`) and send ONE request per reply for the bucket and the severity. An `ok` answer replaces the keyword match below, except: an empty reply is `pass` with no call; if the model says `issue` but the reply matches the deferred-follow-up list below, ask the user once whether it is a gap or a deferred follow-up (#1921: a deferred follow-up never silently becomes a gap); `blocked_by` still comes from its keyword table. Write the `decided-by:` line into the test entry with the result and show it. Abstain, error, or inactive: the lists below decide, unchanged.
+<!-- /decision-model -->
+
 **If response indicates pass:**
 - Empty response, "yes", "y", "ok", "pass", "next", "approved", "✓"
 

@@ -356,6 +356,9 @@ For each Requirement gathered so far:
    - An `unclassified` row (probe `unclassified — review manually`) means the requirement's
      prose matched no shape cue (#1110) — treat it like any other candidate (**Specify**,
      **Dismiss (reason)**, or **Defer**). A manual-review nudge, not a hard block.
+   <!-- decision-model: probe-proposal -->
+   - **Decision model (optional):** when `gsd_run decide --status` prints `"active": true`, an `unclassified` row may carry `model_proposal` (see `~/.claude/gsd-core/references/decision-model-calls.md`, section `site: probe-proposal`). Show its proposed shapes, each with its `decided-by:` line. The author confirms by setting `confirm_with.shapes` as that requirement's `shapes` and re-running the probe; otherwise handle the row as above. `--auto` never confirms a proposal (#1110 exception below).
+   <!-- /decision-model -->
 
 **Soft gate (after resolving):**
 - All applicable edges resolved → proceed to Step 5.6.
@@ -412,6 +415,9 @@ For each Requirement gathered so far, run the two-stage recall→precision pass:
    NOT minted here — emit a one-line breadcrumb (*"prototype-pollution is canon — owned by
    /gsd:secure-phase + eslint; not minted here"*) and DROP it. Minting canon items duplicates
    /gsd:secure-phase and drowns the bespoke signal.
+   <!-- decision-model: prohibition-rescue -->
+   **Decision model (optional):** add-only rescue (ADR-550 D4). Run `gsd_run decide --status`; only if it prints `"active": true`, re-check the routine-engineering drops per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: prohibition-rescue`) and add each rescued candidate to step 4 with its `decided-by:` line. Kept items and canon drops are never sent or changed. Otherwise skip.
+   <!-- /decision-model -->
 4. **Resolve each surfaced (non-canon) prohibition** (AskUserQuestion; text mode → numbered list):
    - **Keep it** → write a NEGATIVE acceptance criterion (a must-NOT line) into Acceptance
      Criteria AND mark the prohibition `resolved` with a verification tier: `test` (a
