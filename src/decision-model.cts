@@ -1247,6 +1247,8 @@ function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
   const without = (reason: AbstainReason): DecisionResponse => finish(respondWithoutBackend(valid, cfg, reason), []);
 
   const calls = countDispatchable(valid, cfg);
+  // No question needs the backend: preResolve answers every one of them, so the
+  // fallback reason passed here is never used (IN-09) and no child is spawned.
   if (calls === 0) return without(ABSTAIN_REASON.INVALID_OUTPUT);
 
   const spawn: SpawnFn = opts._spawn ?? (spawnSync as unknown as SpawnFn);
