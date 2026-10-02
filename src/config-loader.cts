@@ -624,9 +624,11 @@ function _readConfigFile(filePath: string):
 
 /**
  * The user-scope GSD defaults file, `$GSD_HOME/.gsd/defaults.json` (GSD_HOME
- * falls back to the OS home directory). This is the one resolver for that path:
- * Branch D, the #3532 shadow diagnostic and the decision-model user-scope-only
- * keys (quick 261001-wza, D21) all read through it.
+ * falls back to the OS home directory). This is the one resolver for that path
+ * inside config-loader: Branch D, the #3532 shadow diagnostic and the
+ * decision-model user-scope-only keys (quick 261001-wza, D21/D22) read through it.
+ * Other modules still build the path from os.homedir() and ignore GSD_HOME
+ * (config.cts buildNewProjectConfig, the installer model and effort resolvers).
  */
 function globalDefaultsPath(): string {
   const home = process.env['GSD_HOME'] || os.homedir();
