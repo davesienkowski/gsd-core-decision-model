@@ -174,7 +174,7 @@ mkdir -p .planning/intel/classifications/
 ```
 
 <!-- decision-model: ingest-doc-type -->
-**Decision model (optional):** before any spawn, run `gsd_run decide --status`; only if it prints `"active": true`, Read `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: ingest-doc-type`) and classify every untyped doc (no manifest type, no ADR/PRD/SPEC directory-convention match) in ONE batch request. For an `ok` answer other than `UNKNOWN`, spawn no classifier for that doc: write its classification JSON yourself as that section says, with the `decided-by:` line in `notes`. Abstain, `UNKNOWN`, any error, or inactive: spawn as below, unchanged. The discovered-set approval above always runs.
+**Decision model (optional):** before any spawn, run `gsd_run decide --status`; only if it prints `"active": true`, Read `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: ingest-doc-type`) and classify every untyped doc (no manifest type, no ADR/PRD/SPEC directory-convention match, no frontmatter `type:`) in ONE call. For an `ok` answer other than `UNKNOWN`, spawn no classifier for that doc: write its classification JSON yourself as that section says, with the `decided-by:` line in `notes`. Abstain, `UNKNOWN`, any error, or inactive: spawn as below, unchanged. The discovered-set approval above always runs.
 <!-- /decision-model -->
 
 For each discovered doc, spawn `gsd-doc-classifier` in parallel. In Claude Code, issue all Task calls in a single message with multiple tool uses so the harness runs them concurrently. For Copilot / sequential runtimes, fall back to sequential dispatch.

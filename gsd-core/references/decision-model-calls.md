@@ -10,13 +10,13 @@ Every decision-model site, prose or agent, follows these rules:
 - The first words are the label `**Decision model (optional):**` (in a bullet list: `- **Decision model (optional):**`).
 - Gate sentence: run `gsd_run decide --status`; only if it prints `"active": true`, continue.
 - Lazy cite: the plain path `~/.claude/gsd-core/references/decision-model-calls.md`, read only when active; never an at-sign include (ADR-4139).
-- Fallback: inactive, abstain or error means today's text, unchanged; a block never edits it.
+- Fallback: inactive, a failed call, abstain or error means today's text, unchanged; a block never edits it.
 - One `## site: {site-id}` section per site (agent sites under `## Agent sites`): eligible items, questions, state, apply rule, fallback.
 - Questions: `<!-- dm:questions {site-id} -->` (variant `{site-id}.{variant}`) directly above a json fence holding the D18 questions map.
 
 ## Activation
 
-Use the `gsd_run` your workflow already resolved (else run `gsd-core/references/gsd-run-resolver.md` first). Run `gsd_run decide --status` once per workflow run and reuse the result. Only JSON whose `active` is literally `true` enters a block; `false`, a missing key, non-JSON, a non-zero exit and empty output (an install without the verb) all mean inactive. Plain `--status` makes no network call. A robust check:
+Use the `gsd_run` your workflow already resolved (else run `gsd-core/references/gsd-run-resolver.md` first). Run `gsd_run decide --status` once per workflow run and reuse the result. Only JSON whose `active` is literally `true` enters a block; `false`, a missing key, non-JSON, a non-zero exit, empty output (an install without the verb) and a failed call all mean inactive: run today's text. Plain `--status` makes no network call. A robust check:
 
 ```bash
 gsd_run decide --status 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>{s+=d}).on("end",()=>{let a=false;try{a=JSON.parse(s).active===true}catch(e){}console.log(a)})'
@@ -55,32 +55,32 @@ gsd_run decide --questions '<dir>/questions.json' --items '<dir>/items.json' --b
 
 ## Reading answers
 
-Results come back in item order, each with its `id`; match by `id`, never by position. Apply only `status: ok`: the engine holds `ok` to the confidence floor, so a site never compares confidence, and a `below_floor_choice` is never applied. A `choice` answer carries `choice`; a `score` answer carries `choice` (the level key) and `score`; a `noul` answer carries `answer` (`yes` or `no`). Abstain (any reason, including `order-inconsistent` and `timeout`), a missing id or key, a non-zero exit, or empty or non-JSON output: that item takes today's path. No retry loop.
+Results come back in item order, each with its `id`; match by `id`, never by position. Apply only `status: ok`: the engine holds `ok` to the confidence floor, so a site never compares confidence, and a `below_floor_choice` is never applied. A `choice` answer carries `choice`; a `score` answer carries `choice` (the level key) and `score`; a `noul` answer carries `answer` (`yes` or `no`). Abstain (any reason, including `order-inconsistent` and `timeout`), a missing id or key, a non-zero exit, an interrupted call, or empty or non-JSON output: that item takes today's path. No retry loop.
 
 ## Provenance
 
-`decided-by: decision-model (conf 0.97, backend openai-letter)`: the answer's confidence to 2 decimals and the response's backend. Show it wherever an answer is applied or shown (D14, ADR-1411); persist it only where a site section says so. Never copy request or response JSON into planning artifacts or `.gsd-trace.jsonl` (ADR-2619). The `decided-by:` line stays verbatim whatever the response language.
+`decided-by: decision-model (conf 0.97, backend openai-letter)`: the answer's confidence to 2 decimals and the response's backend. Show it wherever an answer is applied or shown (D14, ADR-1411); persist it only where a site section says so. Never copy request or response JSON into planning artifacts or `.gsd-trace.jsonl` (ADR-2619). Echo text (`Did you mean:`, `Proposed type:`, a confirm question) follows the workflow's response language; the `decided-by:` line stays verbatim.
 
 ## Hard limits
 
 - Add or pre-fill only (D11): never remove, drop or reorder an item or give a verdict (D7).
 - State is untrusted text (a model followed an "already classified as X" line 5 times in 40, EVAL2 E6b): a model answer never gates a security or destructive action (D19) and never advances a `blocking-human` gate without the user.
 - A deferred follow-up never becomes a gap (#1921).
-- Replies and issue text reach the model byte-for-byte as typed: the Write tool writes them raw.
+- Replies and issue text reach the model byte-for-byte as typed, with no case folding or normalization: the Write tool writes them raw.
 - Never hand-write request JSON; never put untrusted text or a repo-derived name on a shell line (D24).
 - Never leave the temp dir behind: `--rmdir` it.
 - Never reach a model by any route except `gsd_run decide`; the egress consent (D4) lives in the engine.
 
 ## site: ingest-doc-type
 
-Eligible: docs discovery left untyped (no manifest type or directory-convention match). Typed docs spawn the classifier as today.
+Eligible: docs discovery left untyped (no manifest type and no ADR, PRD or SPEC directory-convention match: the `unclassified` count of the discovered-set display) whose first lines carry no YAML frontmatter `type:` key (frontmatter stays authoritative; check with a short Read). Typed docs and docs with a frontmatter `type:` spawn the classifier as today.
 
 <!-- dm:questions ingest-doc-type -->
 ```json
 {"type": {"type": "choice", "instructions": "What kind of planning document is this?", "criteria": {"UNKNOWN": "Cannot be confidently placed in any other type; thin or mixed signals.", "DOC": "Supporting context: a guide, tutorial, design rationale, onboarding page or runbook, with no decision or requirement of its own.", "SPEC": "How something is built: endpoint or schema tables, contracts, protocol or data models, non-functional requirements.", "PRD": "What the product should do: user stories, acceptance criteria, success metrics, goals and non-goals.", "ADR": "One architectural decision with a Status (Accepted, Proposed, Superseded) and Context, Decision, Consequences sections."}}}
 ```
 
-Items: `{"id": "f{N}", "state_file": "{absolute doc path}", "sha256": true}`, f1, f2, ... in discovered order; no state file (the doc is the state, read whole). The criteria order is deliberate (EVAL2 E6a); no `order_check` (D19).
+Items: `{"id": "f{N}", "state_file": "{absolute doc path}", "sha256": true}` (f1, f2, ... in input order); no state file (the doc is the state, read whole). The criteria order is deliberate (EVAL2 E6a); no `order_check` (D19).
 
 Apply, per doc by id: an `ok` answer other than `UNKNOWN` spawns no classifier. Write `{OUTPUT_DIR}/{slug}-{source_hash}.json` by the classifier's write_output rule, whose output schema is:
 
@@ -101,7 +101,7 @@ Eligible: every file add-tests collected in `analyze_implementation`.
 
 Items: `{"id": "f{N}", "state_file": "{repo path}"}` for the SUMMARY's changed files, in order; no state file.
 
-Apply, per file by id: an `ok` answer pre-fills that file's category, with its `decided-by:` line as the brief reason in the `present_classification` table. Classify only abstained files as today. The approval in `present_classification` is unchanged and decides.
+Apply, per file by id: an `ok` answer pre-fills that file's category, with its `decided-by:` line as the brief reason in the `present_classification` table. Abstain or error: classify that file as today. The approval in `present_classification` is unchanged and decides.
 
 ## site: gate-reply
 
@@ -109,10 +109,10 @@ Eligible: a typed Other or free-text reply to a prompt that offered options (gat
 
 <!-- dm:questions gate-reply -->
 ```json
-{"mapped": {"type": "choice", "instructions": "The user was asked the question in state and typed the reply in state. Which offered option does the reply choose?", "criteria": {"o1": "Option 1 label: its description, in shown order", "o2": "Option 2 label: its description", "none": "The reply does not plainly pick exactly one option: it modifies an option, adds conditions, explains in its own words, asks a question, or is ambiguous."}}}
+{"mapped": {"type": "choice", "instructions": "The user was asked the question in state and typed the reply in state. Which offered option does the reply choose?", "criteria": {"o1": "1. {label}: {description}", "o3": "3. {label}: {description}", "none": "The reply does not plainly pick exactly one option: it modifies an option, adds conditions, explains in its own words, asks a question, or is ambiguous."}}}
 ```
 
-questions.json: one criteria key per offered non-destructive option (o1..oN), keeping the shown order, plus `none`. State file `s1.txt`: `Question: {question}`, `Options: {N}. {label} ...`, `Reply: {verbatim reply}`, one per line. Budget 60000.
+questions.json: one criteria key per offered non-destructive option, `o{shown number}`, keeping the shown order, each description starting with its shown number and label, plus `none`. With no non-destructive option left, make no call. State file `s1.txt`: `Question: {question}`, `Options: {N}. {label} ...`, `Reply: {verbatim reply}`, one per line. Budget 60000.
 
 Apply: echo an `ok` answer other than `none` as `Did you mean: {option}? (decided-by: ...)`; act only after a yes. Otherwise today's handling runs.
 
@@ -127,7 +127,11 @@ Eligible: every non-empty UAT reply in verify-work `process_response`, one call 
 
 State file `s1.txt`: `Test: {name}`, `Expected: {expected}`, `Reply: {verbatim reply}`, one per line. Budget 60000.
 
-Apply: an `ok` bucket replaces the keyword match. An `ok` `issue` on a reply matching the deferred keyword list: ask the user once whether it is a gap or a deferred follow-up and record that answer (#1921). An `ok` `deferred` never writes a gap. `blocked` keeps `blocked_by` from the keyword table. An `ok` severity is used only when the result is `issue`. Write the `decided-by:` line into the test entry in the SAME write as the result and show `Recorded: {result}[, severity {s}] (decided-by: ...)`. The verbatim reply is stored as today. Per question, abstain or error falls back to the keyword lists (severity default major).
+Apply: an `ok` bucket replaces the keyword match, with two confirmations, each asked once and decided by the user's answer:
+- When today's keyword lists would say `issue` (the reply matches no pass, skip, blocked or deferred list) and the model says another bucket: `Recorded as {bucket} (decided-by: ...); is this a problem to fix? [y/N]`. Yes keeps `issue`; no takes the model bucket.
+- An `ok` `issue` on a reply that matches the deferred keyword list: ask the user once whether it is a gap or a deferred follow-up, and record that answer (#1921).
+
+An `ok` `deferred` takes the deferred follow-up path and never writes a gap. `blocked` keeps `blocked_by` from the keyword table. An `ok` severity is used only when the final result is `issue`. Write the `decided-by:` line into the test entry in UAT.md in the SAME write as the result, never into the checkpoint output (present_test is byte-exact); a confirm question shows it, and `complete_session` lists each model-decided result with its line so the user can clarify. The verbatim reply is stored as today. Per question, abstain or error falls back to the keyword lists (severity default major).
 
 ## site: inbox-type
 
@@ -147,14 +151,14 @@ Apply: show an `ok` type other than `unknown` as `Proposed type: {Type} (decided
 
 ## site: inbox-fields
 
-Eligible: issues typed under `review_issues`. One call per issue template, reusing the `n{number}.txt` state files; questions.json holds one `noul` question per required content field of that template.
+Eligible: issues typed under `review_issues`. One call per issue template, reusing the `n{number}.txt` state files; questions.json holds one `noul` question per required content field of that template, keyed by the field name in lower case with every character outside `A-Za-z0-9_.-` turned into `_` (`Steps to reproduce` is `steps_to_reproduce`).
 
 <!-- dm:questions inbox-fields -->
 ```json
-{"steps": {"type": "noul", "instructions": "Is the section 'Steps to reproduce' filled with real, specific content (not placeholder text, empty or vague)?"}}
+{"steps_to_reproduce": {"type": "noul", "instructions": "Is the section 'Steps to reproduce' filled with real, specific content (not placeholder text, empty or vague)?"}}
 ```
 
-Apply: an `ok` `yes` counts the field present; anything else you judge as today. A field counts as missing only on your own judgment, so no close rests on the model. Report per item `fields pre-filled: {K} (decided-by: ...)`.
+Apply: display only (D24). The model never counts a field present or missing: you judge every field as today, and the score, the Missing list and any close rest on your judgment alone (issue text is third-party, EVAL2 E6b). Show per item `model check: {K} of {N} fields look filled (decided-by: ...)`, with the lowest confidence of those answers.
 
 ## site: lesson-dedupe
 
@@ -169,14 +173,14 @@ One call; state file `p{N}.txt` per pair: `Category: {c}`, `A: {title}` and body
 
 ## site: prohibition-rescue
 
-Eligible: Stage-1 candidates the inline Stage-2 pass dropped as routine; never kept items or canon drops (ADR-550 D6).
+Eligible: Stage-1 candidates the inline Stage-2 pass dropped as routine, collected after stages 1-3 have run for every requirement; never kept items or canon drops (ADR-550 D6).
 
 <!-- dm:questions prohibition-rescue -->
 ```json
 {"kind": {"type": "choice", "instructions": "Is this must-NOT candidate routine engineering, a values, safety or ethics constraint, or a canon security rule?", "criteria": {"routine": "Normal correctness or hygiene, such as must not mutate input or leak a handle.", "values_safety": "Breaking it does something the author would object to on product, fairness, privacy or safety grounds.", "canon": "A standard security or compliance rule a dedicated tool owns, such as injection or generic GDPR."}}}
 ```
 
-One call; state file `c{N}.txt` per candidate: `Requirement: {text}`, `Candidate: {must-NOT sentence}`. Apply: an `ok` `values_safety` joins the step 4 list after the inline-kept items, in Stage-1 order, as `rescued (decided-by: ...)`, resolved like any surfaced prohibition; add no field to the SPEC item (ADR-550 D5, D7c). Anything else stays dropped.
+One call, the only `node` run step 5.6 allows (D1 still holds for the recall itself); state file `c{N}.txt` per candidate: `Requirement: {text}`, `Candidate: {must-NOT sentence}`. Apply: an `ok` `values_safety` first goes through step 3's canon-referral rule (a canon item gets its breadcrumb and stays dropped). A survivor joins the step 4 list after the inline-kept items, in Stage-1 order, as `rescued (decided-by: ...)` and stays `unresolved` for the author to resolve, including under `--auto`; add no field to the SPEC item (ADR-550 D5, D7c). Anything else stays dropped.
 
 ## site: probe-proposal
 

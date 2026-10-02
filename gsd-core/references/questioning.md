@@ -116,7 +116,7 @@ The same applies if YOU include a freeform-indicating option (like "Let me expla
 **Right:** User says "let me describe it" → "Go ahead — what are you thinking?"
 
 <!-- decision-model: gate-reply -->
-**Decision model (optional):** for an "Other" reply, run `gsd_run decide --status` once per session; only if it prints `"active": true`, check per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: gate-reply`) whether the reply simply picks one listed option. If so, echo that option with its `decided-by:` line and use it only after a yes. `none` (it explains, modifies an option, or asks), abstain, a "no", or inactive: this rule applies unchanged.
+**Decision model (optional):** for an "Other" reply, run `gsd_run decide --status` once per workflow run; only if it prints `"active": true`, check per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: gate-reply`) whether the reply simply picks one listed option. If so, echo that option with its `decided-by:` line and use it only after a yes. `none` (it explains, modifies an option, or asks), abstain, a "no", or inactive: this rule applies unchanged.
 <!-- /decision-model -->
 
 </freeform_rule>

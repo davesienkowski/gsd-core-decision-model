@@ -416,7 +416,7 @@ For each Requirement gathered so far, run the two-stage recall→precision pass:
    /gsd:secure-phase + eslint; not minted here"*) and DROP it. Minting canon items duplicates
    /gsd:secure-phase and drowns the bespoke signal.
    <!-- decision-model: prohibition-rescue -->
-   **Decision model (optional):** add-only rescue (ADR-550 D4). Run `gsd_run decide --status`; only if it prints `"active": true`, re-check the routine-engineering drops per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: prohibition-rescue`) and add each rescued candidate to step 4 with its `decided-by:` line. Kept items and canon drops are never sent or changed. Otherwise skip.
+   **Decision model (optional):** add-only rescue (ADR-550 D4). Run `gsd_run decide --status`; only if it prints `"active": true`, once every requirement has passed stages 1-3, re-check routine drops in ONE call per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: prohibition-rescue`), the one `node` run D1 allows. A rescue passes the step 3 canon rule, then joins step 4 `unresolved` with its `decided-by:` line, even under `--auto`. Otherwise skip.
    <!-- /decision-model -->
 4. **Resolve each surfaced (non-canon) prohibition** (AskUserQuestion; text mode → numbered list):
    - **Keep it** → write a NEGATIVE acceptance criterion (a must-NOT line) into Acceptance

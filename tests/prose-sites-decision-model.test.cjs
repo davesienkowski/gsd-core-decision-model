@@ -71,14 +71,14 @@ const SITES = [
       'For each discovered doc, spawn `gsd-doc-classifier` in parallel.',
       '**Display discovered set** and request approval',
     ],
-    must: ['UNKNOWN'],
+    must: ['UNKNOWN', 'frontmatter `type:`'],
   },
   {
     file: 'gsd-core/workflows/add-tests.md',
     id: 'file-class',
     maxBytes: 700,
     keep: ["Read each file to verify classification. Don't classify based on filename alone."],
-    must: ['present_classification'],
+    must: ['present_classification', 'criteria above'],
   },
   {
     file: 'gsd-core/references/gate-prompts.md',
@@ -121,7 +121,7 @@ const SITES = [
       '- Contains: crash, error, exception, fails, broken, unusable \u2192 blocker',
       'Note: Blocked tests do NOT go into the Gaps section',
     ],
-    must: ['#1921', 'empty reply'],
+    must: ['#1921', 'empty reply', 'ask the user once', 'never add it to the checkpoint output'],
   },
   {
     file: 'gsd-core/templates/UAT.md',
@@ -131,7 +131,7 @@ const SITES = [
       'Default: **major** (safe default, user can clarify if wrong)',
       '- If issue: add `reported` (verbatim) and `severity` (inferred)',
     ],
-    must: ['decided-by:'],
+    must: ['decided-by:', 'never in the checkpoint output'],
   },
   {
     file: 'gsd-core/workflows/inbox.md',
@@ -149,7 +149,7 @@ const SITES = [
     id: 'inbox-fields',
     maxBytes: 750,
     keep: ['- Score = (present / total) * 100', 'Always confirm with the user before closing anything:'],
-    must: ['own judgment'],
+    must: ['own judgment', 'display only'],
   },
   {
     file: 'gsd-core/workflows/graduation.md',
@@ -166,14 +166,14 @@ const SITES = [
     id: 'prohibition-rescue',
     maxBytes: 600,
     keep: ['- **DROP routine-engineering items**', 'This collapses the raw ~10 to ~2–3 genuine prohibitions'],
-    must: ['never drops'],
+    must: ['never drops', 'unresolved', '--auto'],
   },
   {
     file: 'gsd-core/workflows/spec-phase.md',
     id: 'prohibition-rescue',
     maxBytes: 550,
     keep: ['**D1 — no compiled engine (ADR-550 D7b).**', '4. **Resolve each surfaced (non-canon) prohibition**'],
-    must: ['canon'],
+    must: ['canon', 'unresolved', '--auto'],
   },
   {
     file: 'gsd-core/workflows/spec-phase.md',
@@ -280,6 +280,15 @@ function recipeCall(text) {
   const m = re.exec(hits[0]);
   assert.ok(m, `the call line has the documented shape: ${hits[0]}`);
   return { flags: ['--questions', '--items', '--budget-ms'], questions: m[1], items: m[2], budgetMs: Number(m[3]), answers: m[4] };
+}
+
+/** The body of the `## {heading}` section of `text`, up to the next `## ` heading. */
+function section(text, heading) {
+  const lines = text.split('\n');
+  const at = lines.indexOf(`## ${heading}`);
+  assert.notEqual(at, -1, `missing ## ${heading}`);
+  const next = lines.findIndex((l, i) => i > at && l.startsWith('## '));
+  return lines.slice(at + 1, next === -1 ? lines.length : next).join('\n');
 }
 
 function walkMarkdown(dirRel, out) {
@@ -393,6 +402,35 @@ describe('decision-model-calls.md reference', () => {
     }
     const call = recipeCall(text);
     assert.deepEqual(call.flags, ['--questions', '--items', '--budget-ms'], 'one items-mode call');
+  });
+
+  test('D24 per-site rules and the restored details are in the site sections', () => {
+    const text = readReference();
+    const want = {
+      'Activation': ['a failed call'],
+      'Reading answers': ['an interrupted call'],
+      'Provenance': ['response language'],
+      'Hard limits': ['no case folding or normalization'],
+      'site: ingest-doc-type': ['frontmatter `type:`', '`unclassified` count', 'f1, f2, ... in input order'],
+      'site: file-class': ['classify that file as today'],
+      'site: gate-reply': ['shown number', 'no non-destructive option'],
+      'site: uat-reply': ['would say `issue`', 'ask the user once', 'takes the deferred follow-up path', 'final result',
+        'never into the checkpoint output', 'so the user can clarify'],
+      'site: inbox-fields': ['display only', 'never counts a field present', 'lowest'],
+      'site: prohibition-rescue': ['canon-referral', '`unresolved`', 'including under `--auto`', 'every requirement'],
+    };
+    for (const [heading, phrases] of Object.entries(want)) {
+      const body = section(text, heading);
+      for (const phrase of phrases) assert.ok(body.includes(phrase), `## ${heading} must say: ${phrase}`);
+    }
+  });
+
+  test('IN-03: every block that names a --status cadence says once per workflow run', () => {
+    for (const site of SITES) {
+      for (const b of extractBlocks(read(site.file), site.id)) {
+        assert.ok(!/once per (session|run)\b/.test(b.text), `${site.file} [${site.id}] uses another cadence phrase`);
+      }
+    }
   });
 
   test('states that only ok answers are applied and below_floor_choice never is', () => {

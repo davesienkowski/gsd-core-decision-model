@@ -103,7 +103,7 @@ blocked: [N]
 - If skipped: add `reason` if provided
 - If blocked: add `blocked_by` (tag) and `reason` (if provided)
 <!-- decision-model: uat-reply -->
-- **Decision model (optional):** if verify-work's decision model set the result or severity (only when `gsd_run decide --status` prints `"active": true`; see `~/.claude/gsd-core/references/decision-model-calls.md`), add `decided-by: decision-model (conf X, backend Y)` after the result fields. The severity table below stays the fallback.
+- **Decision model (optional):** if verify-work's decision model set the result or severity (only when `gsd_run decide --status` prints `"active": true`; see `~/.claude/gsd-core/references/decision-model-calls.md`), add `decided-by: decision-model (conf X, backend Y)` after the result fields; it lives here, never in the checkpoint output. The severity table below stays the fallback.
 <!-- /decision-model -->
 
 **Summary:**

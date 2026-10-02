@@ -74,7 +74,7 @@ If an issue has no type label, attempt to classify from the body content:
 - Cannot determine → mark as `needs-triage`
 
 <!-- decision-model: inbox-type -->
-**Decision model (optional):** for issues these rules leave undetermined, run `gsd_run decide --status` once per run; only if it prints `"active": true`, ask for a proposed type per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: inbox-type`). Show an `ok` type in the report as "proposed" with its `decided-by:` line; the issue still counts as `needs-triage` for review, labels, and closing. Otherwise unchanged.
+**Decision model (optional):** for issues these rules leave undetermined, run `gsd_run decide --status` once per workflow run; only if it prints `"active": true`, ask for a proposed type per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: inbox-type`). Show an `ok` type in the report as "proposed" with its `decided-by:` line; the issue still counts as `needs-triage` for review, labels, and closing. Otherwise unchanged.
 <!-- /decision-model -->
 </step>
 
@@ -136,7 +136,7 @@ For each classified issue, review against its template requirements.
 - **Label check:** Has `needs-triage` label?
 
 <!-- decision-model: inbox-fields -->
-**Decision model (optional):** run `gsd_run decide --status` once per run; only if it prints `"active": true`, pre-check the required fields of the classified issues in ONE batch request per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: inbox-fields`). An `ok` "yes, filled" answer counts that field present; for any other answer, judge the field as below. A field counts as missing only on your own judgment, so no close ever rests on the model. Show the `decided-by:` line per item.
+**Decision model (optional):** run `gsd_run decide --status` once per workflow run; only if it prints `"active": true`, pre-check the required fields of the classified issues per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: inbox-fields`). Its answers are display only: judge every field as below, and a field counts present or missing only on your own judgment, so no score, list or close rests on the model. Show its count per item with the `decided-by:` line.
 <!-- /decision-model -->
 
 **Scoring:** For each issue, calculate a completeness percentage:
@@ -164,7 +164,7 @@ For each PR, classify by body content and linked issue:
 | Cannot determine | Unknown | Flag for manual review |
 
 <!-- decision-model: inbox-type -->
-**Decision model (optional):** for PRs this table leaves at "Cannot determine", run `gsd_run decide --status` once per run; only if it prints `"active": true`, ask for a proposed type per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: inbox-type`). Show an `ok` type in the report as "proposed" with its `decided-by:` line; the PR still counts as Unknown for review, labels, and closing. Otherwise unchanged.
+**Decision model (optional):** for PRs this table leaves at "Cannot determine", run `gsd_run decide --status` once per workflow run; only if it prints `"active": true`, ask for a proposed type per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: inbox-type`). Show an `ok` type in the report as "proposed" with its `decided-by:` line; the PR still counts as Unknown for review, labels, and closing. Otherwise unchanged.
 <!-- /decision-model -->
 
 Also check for linked issues:

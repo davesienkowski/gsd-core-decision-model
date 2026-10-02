@@ -51,7 +51,7 @@ Wait for the user's reply at the normal prompt. Parse:
 - Free text → treated as "Other" — reflect it back, confirm, then proceed
 
 <!-- decision-model: gate-reply -->
-**Decision model (optional):** for free text, run `gsd_run decide --status` once per session; only if it prints `"active": true`, map the reply to one listed option or `none` per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: gate-reply`), and reflect it back as "Did you mean {N}. {label}?" with its `decided-by:` line; use that option only on a yes. `none`, abstain, a "no", or inactive: the Other handling above, unchanged.
+**Decision model (optional):** for free text, run `gsd_run decide --status` once per workflow run; only if it prints `"active": true`, map the reply to one listed option or `none` per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: gate-reply`), and reflect it back as "Did you mean {N}. {label}?" with its `decided-by:` line; use that option only on a yes. `none`, abstain, a "no", or inactive: the Other handling above, unchanged.
 <!-- /decision-model -->
 
 ## Empty-answer handling

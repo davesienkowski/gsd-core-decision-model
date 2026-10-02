@@ -197,7 +197,7 @@ Present via AskUserQuestion:
 - **options:** (compound options as built above + refresh + exit, AskUserQuestion auto-adds "Other")
 
 <!-- decision-model: gate-reply -->
-**Decision model (optional):** before parsing an "Other" reply, run `gsd_run decide --status` once per session; only if it prints `"active": true`, map the reply to one offered action or `none` per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: gate-reply`). Echo the mapped action with its `decided-by:` line and dispatch it only after the user says yes. `none`, abstain, a "no", or inactive: parse intent as below.
+**Decision model (optional):** before parsing an "Other" reply, run `gsd_run decide --status` once per workflow run; only if it prints `"active": true`, map the reply to one offered action or `none` per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: gate-reply`). Echo the mapped action with its `decided-by:` line and dispatch it only after the user says yes. `none`, abstain, a "no", or inactive: parse intent as below.
 <!-- /decision-model -->
 
 **On "Other" (free text):** Parse intent — if it mentions a phase number and action, dispatch accordingly. If unclear, display available actions and loop to action_menu.

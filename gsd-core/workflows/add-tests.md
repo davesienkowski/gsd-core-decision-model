@@ -105,7 +105,7 @@ For each file, classify into one of three categories:
 - Type definitions: records, DTOs, interfaces with no logic
 
 <!-- decision-model: file-class -->
-**Decision model (optional):** run `gsd_run decide --status`; only if it prints `"active": true`, classify all files in ONE batch request per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: file-class`). Pre-fill each `ok` file's category and use its `decided-by:` line as the brief reason; read and classify only the remaining files as below. The approval in `present_classification` is unchanged and decides. Abstain, error, or inactive: classify every file as below.
+**Decision model (optional):** run `gsd_run decide --status`; only if it prints `"active": true`, classify all files in ONE call per `~/.claude/gsd-core/references/decision-model-calls.md` (section `site: file-class`). Pre-fill each `ok` file's category and use its `decided-by:` line as the brief reason; read and classify only the remaining files by the criteria above. The approval in `present_classification` is unchanged and decides. Abstain, error, or inactive: classify every file by the criteria above.
 <!-- /decision-model -->
 
 Read each file to verify classification. Don't classify based on filename alone.

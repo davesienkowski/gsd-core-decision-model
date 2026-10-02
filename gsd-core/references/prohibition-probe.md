@@ -74,7 +74,7 @@ N18 eight-spec battery). A requirement that yields zero kept prohibitions emits 
 list — that is the correct precision outcome for a pure utility, not a failure.
 
 <!-- decision-model: prohibition-rescue -->
-**Decision model (optional):** when `gsd_run decide --status` prints `"active": true`, a second classifier re-checks the routine-engineering drops and RESCUES any it reads as values / safety / ethics into the surfaced list for author review (`~/.claude/gsd-core/references/decision-model-calls.md`, section `site: prohibition-rescue`). It never drops a kept item and never mints a canon item.
+**Decision model (optional):** when `gsd_run decide --status` prints `"active": true`, a second classifier re-checks the routine-engineering drops and RESCUES any it reads as values / safety / ethics (`~/.claude/gsd-core/references/decision-model-calls.md`, section `site: prohibition-rescue`). A rescue passes canon-referral and is surfaced `unresolved` for the author, never auto-resolved, also under `--auto`. It never drops a kept item and never mints a canon item.
 <!-- /decision-model -->
 
 ## Canon-referral (do not mint canon items)
