@@ -292,6 +292,48 @@ function recipeCall(text) {
   return { flags: ['--questions', '--items', '--budget-ms'], questions: m[1], items: m[2], budgetMs: Number(m[3]), answers: m[4] };
 }
 
+/** The body of the `### {heading}` subsection of `text` (under `## Agent sites`), up to the next `##`/`###` heading. */
+function subsection(text, heading) {
+  const lines = text.split('\n');
+  const at = lines.indexOf(`### ${heading}`);
+  assert.notEqual(at, -1, `missing ### ${heading}`);
+  const next = lines.findIndex((l, i) => i > at && /^#{2,3} /.test(l));
+  return lines.slice(at + 1, next === -1 ? lines.length : next).join('\n');
+}
+
+/** The grep-rank item template the reference documents: the first `{"id": "h...}` code span of its section. */
+function grepRankTemplate(text) {
+  const m = /`(\{"id": "h<[a-z]+>"[^`]*\})`/.exec(subsection(text, 'Grep-hit pre-rank'));
+  assert.ok(m, 'the Grep-hit pre-rank section documents an item template');
+  return m[1];
+}
+
+/**
+ * Fill the grep-rank template the way an agent does for the k-th hit in its own order, at line n of `file`, of
+ * pattern kind `kind`. The template's own placeholders decide which value lands in the id: a template that numbers
+ * ids by line (`h<n>`) gives two hits on the same line number in different files the same id.
+ */
+function fillGrepItem(tpl, { k, n, file, kind }) {
+  const t = tpl.replace('[max(1, n-5), n+5]', `[${Math.max(1, n - 5)}, ${n + 5}]`)
+    .split('<k>').join(String(k)).split('<n>').join(String(n))
+    .split('<path>').join(file).split('<kind>').join(kind).split('<pattern>').join(kind);
+  return JSON.parse(t);
+}
+
+/** The bytes the engine sends for a D27 slice item: prefix, newline, then lines [start, end] of the file (to EOF). */
+function sliceState(abs, [start, end], prefix) {
+  // Lines with their own terminators, as the engine's byte scanner keeps them (no regex over the file content).
+  const raw = fs.readFileSync(abs, 'utf8');
+  const parts = [];
+  for (let from = 0; from < raw.length;) {
+    const nl = raw.indexOf('\n', from);
+    const stop = nl === -1 ? raw.length : nl + 1;
+    parts.push(raw.slice(from, stop));
+    from = stop;
+  }
+  return `${prefix}\n${parts.slice(start - 1, end).join('')}`;
+}
+
 /** The body of the `## {heading}` section of `text`, up to the next `## ` heading. */
 function section(text, heading) {
   const lines = text.split('\n');
@@ -656,6 +698,34 @@ describe('decide CLI tracer (real engine, sandboxed)', () => {
     assert.equal(out.results[2].answers.type.status, 'ok');
     assert.deepEqual(stub.requests.map((r) => r.state), [adr, '# Guide\n']);
     assert.ok(!fs.existsSync(path.join(cwd, 'PWNED')) && !fs.existsSync(path.join(cwd, 'corpus', 'PWNED')), 'nothing ran');
+  });
+
+  test('CR-01: grep-rank items built from the reference template keep unique ids for hits on the same line number in different files', async (t) => {
+    const stub = await startStub(t);
+    const box = enabledSandbox(t, stub);
+    const { cwd } = box;
+    const reference = readReference();
+    const tpl = grepRankTemplate(reference);
+    const dir = await mkdir(t, box);
+    fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+    const numbered = (count, hit) => Array.from({ length: count }, (_, i) => (i + 1 === 12 ? hit : `const v${i + 1} = ${i + 1};`)).join('\n') + '\n';
+    fs.writeFileSync(path.join(cwd, 'src', 'a.ts'), numbered(20, 'const items = [];'));
+    // b.ts has 14 lines, so the slice [7, 17] of its hit at line 12 runs past the end of the file.
+    fs.writeFileSync(path.join(cwd, 'src', 'b.ts'), numbered(14, 'const rows = [];'));
+    const hits = [{ file: 'src/a.ts', n: 12 }, { file: 'src/b.ts', n: 12 }];
+    const items = hits.map((h, i) => fillGrepItem(tpl, { k: i + 1, n: h.n, file: h.file, kind: 'stub' }));
+    assert.equal(new Set(items.map((it) => it.id)).size, items.length, `ids repeat: ${items.map((it) => it.id)}`);
+    for (const it of items) assert.deepEqual(Object.keys(it), ['id', 'state_file', 'lines', 'prefix']);
+    const questions = questionBlocks(reference).find((q) => q.id === 'grep-rank.stub').questions;
+    fs.writeFileSync(path.join(dir, 'questions.json'), JSON.stringify(questions));
+    fs.writeFileSync(path.join(dir, 'items.json'), JSON.stringify(items));
+    const res = await runCli(['decide', '--questions', path.join(dir, 'questions.json'), '--items', path.join(dir, 'items.json'), '--budget-ms', '240000'], box);
+    assert.equal(res.exitCode, 0, res.stderr);
+    const out = jsonOut(res);
+    assert.deepEqual(out.results.map((r) => r.id), items.map((it) => it.id), 'one result per hit, in item order');
+    for (const r of out.results) assert.equal(r.answers.real.status, 'ok', `${r.id}: ${JSON.stringify(r.answers.real)}`);
+    assert.deepEqual(stub.requests.map((r) => r.state), items.map((it) => sliceState(path.join(cwd, it.state_file), it.lines, it.prefix)),
+      'each state is the prefix plus that file\'s own slice, the past-the-end slice cut at the end of the file');
   });
 
   test('negative control: a questions file with integer criteria keys abstains invalid-request and makes no call', async (t) => {
