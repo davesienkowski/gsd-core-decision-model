@@ -596,6 +596,15 @@ describe('decision-model-calls.md reference', () => {
     }
   });
 
+  test('IN-07: docs-update forwards only line, claim, expected and actual to gsd-doc-writer, never the advisory flag', () => {
+    const text = read('gsd-core/workflows/docs-update.md');
+    const at = text.indexOf('<step name="fix_loop">');
+    assert.notEqual(at, -1, 'docs-update has its fix_loop step');
+    const loop = text.slice(at, text.indexOf('</step>', at));
+    assert.ok(loop.includes('a structured array of `{line, claim, expected, actual}` objects, one per failed claim'), 'today\'s failures contract');
+    assert.ok(loop.includes('copy only those four keys, never the verifier\'s optional `advisory` field'), 'the advisory field never reaches fix mode');
+  });
+
   test('IN-06: the profile pre-label cap fits its own 240000 ms budget at about 0.6 decisions per second', () => {
     const body = subsection(readReference(), 'Profile pre-label');
     const m = /the first ([0-9]+) only/.exec(body);
