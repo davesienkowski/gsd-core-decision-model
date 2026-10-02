@@ -594,6 +594,12 @@ describe('decision-model-calls.md reference', () => {
     }
   });
 
+  test('IN-02: Calling from an agent names every id prefix and every agent that has no gsd_run of its own', () => {
+    const body = subsection(readReference(), 'Calling from an agent');
+    for (const id of ['`h<k>`', '`t<k>`', '`c<k>`', '`kb<k>`', '`m<k>`']) assert.ok(body.includes(id), `Ids bullet names ${id}`);
+    assert.ok(body.includes('An agent with neither (gsd-ui-auditor, gsd-roadmapper, gsd-doc-verifier)'), 'resolver bullet names all three');
+  });
+
   test('WR-06: the profile pre-label section removes the copied private messages on every path', () => {
     const body = subsection(readReference(), 'Profile pre-label');
     const afterCopy = body.slice(body.indexOf("cp '<sample>' '<dir>/messages.jsonl'"));
