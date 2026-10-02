@@ -1724,15 +1724,17 @@ After one `unreachable`, `timeout`, `model-missing` or backend `invalid-config` 
 **Provenance line.** A prose site that records a decision-model answer uses `decided-by: decision-model (conf 0.97, backend openai-letter)`.
 
 ```bash
-node gsd-tools.cjs decide --request .planning/tmp/q.json   # Answer the questions in a request file
 node gsd-tools.cjs decide --request - < q.json             # Read the request from stdin
 node gsd-tools.cjs decide --status                         # Show the resolved config, no network call
 node gsd-tools.cjs decide --status --probe                 # Also check that the backend answers
 node gsd-tools.cjs decide --mkdir                          # Make a marked temp dir; prints its path
+# Write questions.json, items.json and each state file into that dir (not into the project tree), then:
 node gsd-tools.cjs decide --questions /tmp/gsd-decide-AbC123/questions.json \
   --items /tmp/gsd-decide-AbC123/items.json --budget-ms 240000   # Items mode
 node gsd-tools.cjs decide --rmdir /tmp/gsd-decide-AbC123   # Remove it again
 ```
+
+Request and state files hold the text being classified, so keep them out of the project tree: use stdin or the `--mkdir` directory, and remove it with `--rmdir` when the call is done. `--request <path>` is for a file you already keep inside the project root.
 
 See [Configuration Reference](CONFIGURATION.md#decision-model-settings) for the nine `decision_model.*` keys, the egress rule, and the measured limits.
 
