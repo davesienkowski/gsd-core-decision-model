@@ -160,6 +160,10 @@ Parse the JSON output to get the temp directory path and message count.
 
 Display: "✓ Sampled N messages from M projects"
 
+<!-- decision-model: profile-prelabel -->
+**Decision model (optional):** run `gsd_run decide --status`; only if it prints `"active": true`, pre-label the sampled messages in ONE call per `~/.claude/gsd-core/references/decision-model-calls.md` (### Profile pre-label); the profiler has no Bash, so this call is yours. When it wrote `profile-labels.json`, display "✓ Pre-labeled K of N messages (decided-by: decision-model (conf <lowest>, backend <backend>))" and add the line `Pre-labels (decision-model, advisory): @<sample dir>/profile-labels.json` to the prompt below, after `Session data:`. Abstain, error, no messages or inactive: carry on without it.
+<!-- /decision-model -->
+
 Display: "◆ Analyzing patterns..."
 
 ```bash

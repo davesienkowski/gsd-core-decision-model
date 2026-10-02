@@ -73,6 +73,7 @@ While reading, build a mental index:
 - Note message timestamps for recency weighting
 - Flag messages that are log pastes, session context dumps, or large code blocks (deprioritize for evidence)
 - Count total genuine messages to determine threshold mode (full >50, hybrid 20-50, insufficient <20)
+- **Decision model (optional):** if the prompt names `profile-labels.json`, read each dimension's pre-labeled messages first when you scan it (`m<n>` is line n of the sample); still scan every message for every dimension. A pre-label is never a signal or a count: counts, ratings and quotes come only from your own reading.
 </step>
 
 <step name="analyze_dimensions">

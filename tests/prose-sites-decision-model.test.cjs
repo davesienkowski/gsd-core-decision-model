@@ -564,7 +564,8 @@ describe('decide CLI tracer (real engine, sandboxed)', () => {
   });
 
   test('every dm:questions block of the reference is answered ok through the documented recipe', async (t) => {
-    const stub = await startStub(t);
+    // `same_cause` (kb-recall) is named so an order_check block picks the same key in both option orders and answers ok.
+    const stub = await startStub(t, ['same_cause']);
     const box = enabledSandbox(t, stub);
     const reference = readReference();
     const call = recipeCall(reference);
@@ -587,7 +588,8 @@ describe('decide CLI tracer (real engine, sandboxed)', () => {
         else assert.ok(Object.keys(questions[key].criteria).includes(a.choice), `${id}.${key}: ${a.choice}`);
         if (questions[key].type === 'score') assert.equal(typeof a.score, 'number', `${id}.${key}`);
       }
-      assert.equal(stub.requests.length - before, Object.keys(questions).length, `${id}: one call per question`);
+      const wantCalls = Object.values(questions).reduce((n, q) => n + (q.order_check === true ? 2 : 1), 0);
+      assert.equal(stub.requests.length - before, wantCalls, `${id}: one call per question, two with order_check`);
       assert.ok(stub.requests.slice(before).every((r) => r.state === `state for ${id}`), id);
       const removed = await runCli(['decide', '--rmdir', dir], box);
       assert.equal(removed.exitCode, 0, removed.stderr);

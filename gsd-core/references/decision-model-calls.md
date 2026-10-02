@@ -191,7 +191,7 @@ Show each label with its `decided_by` line. Confirm only by authoring the `confi
 
 ## Agent sites
 
-Used by gsd-verifier, gsd-executor, gsd-code-reviewer and gsd-ui-auditor to pre-rank grep hits, and by the flag and recall sites that follow. The model only pre-ranks, pre-labels or flags: the agent reads every item and keeps every verdict (D7, D11). Inactive, abstain, a non-zero exit or unparsable output means continue exactly as the agent's own text says. Everything above applies (Activation, Request shape, Limits, Sending, Reading answers, Provenance, Hard limits). The one reordering allowed is the order in which the agent reads items it still reads in full.
+Used by gsd-verifier, gsd-executor, gsd-code-reviewer and gsd-ui-auditor to pre-rank grep hits, and by the flag and recall sites that follow. The model only pre-ranks, pre-labels or flags: the agent reads every item and keeps every verdict (D7, D11). Inactive, abstain, a non-zero exit or unparsable output means continue exactly as the agent's own text says. Everything above applies. The one reordering allowed is the order in which the agent reads items it still reads in full.
 
 ### Calling from an agent
 
@@ -204,12 +204,12 @@ Used by gsd-verifier, gsd-executor, gsd-code-reviewer and gsd-ui-auditor to pre-
 - Questions: fixed text; copy the site's questions block verbatim into `<dir>/questions.json`.
 - Cap: at most 60 items per call, the first 60 in the agent's own order. Items beyond the cap count as abstained and are still read and judged. Use `--budget-ms 240000` and a Bash timeout of 300000. `order_check` is not used for `noul` questions.
 - Safety (D19): a model answer never gates a security or destructive action. A secret or dangerous-function hit stays Critical whatever the answer.
-- Provenance: an answer that is applied or shown carries its `decided-by:` line. A pre-rank run also records one run line: `decided-by: decision-model (conf <lowest ok confidence>, backend <backend>); pre-ranked <k> of <n> hits; all <n> read`. Decision payloads never go to `.gsd-trace.jsonl` (ADR-2619).
+- Provenance: an answer that is applied or shown carries its `decided-by:` line. A pre-rank run also records one run line: `decided-by: decision-model (conf <lowest ok confidence>, backend <backend>); pre-ranked <k> of <n> hits; all <n> read`.
 
 Read the answers through this one-liner (a header with backend and model, then one line per id: id, status, answer or reason, `p_yes` or confidence), not as raw JSON:
 
 ```bash
-node -e 'let s="";process.stdin.on("data",d=>{s+=d}).on("end",()=>{try{const r=JSON.parse(s);console.log("backend="+r.backend+" model="+r.model);for(const x of r.results){const a=Object.values(x.answers)[0]||{};console.log(x.id+" "+a.status+" "+(a.answer||a.reason)+" "+(a.p_yes!==undefined?a.p_yes:a.confidence))}}catch(e){console.log("unparsable")}})' < '<dir>/answers.json'
+node -e 'let s="";process.stdin.on("data",d=>{s+=d}).on("end",()=>{try{const r=JSON.parse(s);console.log("backend="+r.backend+" model="+r.model);for(const x of r.results){const a=Object.values(x.answers)[0]||{};console.log(x.id+" "+a.status+" "+(a.answer||a.choice||a.reason)+" "+(a.p_yes!==undefined?a.p_yes:a.confidence))}}catch(e){console.log("unparsable")}})' < '<dir>/answers.json'
 ```
 
 ### Grep-hit pre-rank
@@ -262,3 +262,31 @@ Site `doc-claim-flag`. Host: gsd-doc-verifier and its twin, after Step 3 has ext
 ```
 
 Use: an `ok` `no` only prompts a re-check of that line's candidates against `<skip_rules>`; a candidate is skipped only when a rule applies, and the verifier names the rule. Every remaining candidate gets today's filesystem check, which alone sets PASS or FAIL; the model never skips a claim or sets a verdict (D7). A flagged candidate that FAILs gains an optional `"advisory": "possible example or placeholder; decided-by: decision-model (conf X, backend Y)"` field. The counts, the order of `failures` (line order) and every other field are unchanged. Write no file outside `<dir>` for this call.
+
+### Profile pre-label
+
+Site `profile-prelabel`. Host: the profile-user workflow, which has Write and Bash; gsd-user-profiler has `tools: Read` and gets no block (D26). When: after profile-sample, with at least one message. `decide` reads only the project root or a `--mkdir` dir, so after `--mkdir` copy the sample in (paths only, no message text):
+
+```bash
+cp '<sample>' '<dir>/messages.jsonl'
+```
+
+`<sample>` is `output_file` of the profile-sample output. One item per message, the first 150 only (this site's cap, not 60), `n` the line: `{"id": "m<n>", "state_file": "<dir>/messages.jsonl", "lines": [n, n], "prefix": "developer message"}`. Question key `dimension`, type `choice`, no `order_check` (a label only sets reading order):
+
+<!-- dm:questions profile-prelabel -->
+```json
+{"dimension": {"type": "choice", "instructions": "Which profiling dimension does this developer message carry the strongest signal for?", "criteria": {"communication_style": "How the developer phrases requests, instructions and feedback to Claude.", "decision_speed": "How quickly the developer chooses among options or trade-offs Claude presents.", "explanation_depth": "How much explanation the developer wants with code: understanding versus speed.", "debugging_approach": "How the developer approaches problems, errors and unexpected behavior.", "ux_philosophy": "How the developer weighs user experience, design and visual quality against function.", "vendor_philosophy": "How the developer chooses and evaluates libraries, frameworks and external services.", "frustration_triggers": "What causes visible frustration, correction or negative signals toward Claude.", "learning_style": "How the developer prefers to understand new concepts, tools or patterns.", "none": "The message carries no signal for any of these dimensions."}}}
+```
+
+Use: read the answers through the reducer. With the Write tool, write `profile-labels.json` beside the sample: `{"labels": {"m<n>": {"dimension": "<choice>", "confidence": <c>}}}` for each `ok` answer other than `none`; ids, dimensions and confidences only, never message text. No such answer means no file. A label only orders the profiler's reading; it still reads every message and owns every count, rating and quote.
+
+### KB recall
+
+Site `kb-recall`. Host: gsd-debugger, Phase 0, only when MemPalace is absent; an empty or missing `.planning/debug/knowledge-base.md` means no call. One item per entry, newest first, at most 40 (`order_check` doubles the calls), `n` from 1: `{"id": "kb<n>", "state_file": ".planning/debug/knowledge-base.md", "lines": [start, end], "prefix": "symptoms: <summary>"}`. `lines` runs from the entry's `## ` heading to the line before the next heading or the file end; `<summary>` is your own one-line summary of the current symptoms, at most 150 characters, with no `"` or `\`. Question key `match`, type `choice`, `order_check` true (a position-biased pick would put a wrong hypothesis first):
+
+<!-- dm:questions kb-recall -->
+```json
+{"match": {"type": "choice", "instructions": "The state gives the current symptoms, then one prior resolved debug session. Does that session share a root cause with the symptoms, even if worded differently?", "order_check": true, "criteria": {"same_cause": "The prior session has the same root cause as the current symptoms.", "different_cause": "The prior session has a different or unrelated root cause."}}}
+```
+
+Use: see `debugger-semantic-recall.md`, Decision-model candidates.

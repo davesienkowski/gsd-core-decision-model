@@ -43,6 +43,7 @@ Read `~/.claude/gsd-core/references/user-profiling.md` to load: all 8 dimension 
 
 <step name="read_messages">
 Read all provided messages. While reading: group by project (cross-project consistency), note timestamps (recency), flag log pastes/context dumps/large code blocks (deprioritize as evidence), count total genuine messages for threshold mode (full >50, hybrid 20-50, insufficient <20).
+**Decision model (optional):** if the prompt names `profile-labels.json`, read each dimension's pre-labeled messages (`m<n>` = line n) first; still scan every message for every dimension. A pre-label is never a signal or count.
 </step>
 
 <step name="analyze_dimensions">
