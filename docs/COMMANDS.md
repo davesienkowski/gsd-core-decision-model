@@ -1692,6 +1692,8 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 - score: `{"status": "ok", "choice", "score", "confidence", "probabilities"}`
 - `{"status": "abstain", "reason", "confidence"?, "below_floor_choice"?}`
 
+With the `openai-letter` backend and no `order_check`, an `ok` answer's `confidence` equals `probabilities[choice]` (for `noul`, the larger of `p_yes` and `1 - p_yes`); the `jev` backend reports the server's own `confidence`. With `order_check: true` they can differ on either backend: `probabilities` and `score` come from the first (original-order) call, while `confidence` is the lower of the two calls' confidences.
+
 **Abstain reasons.** Precedence is the order given here for the first six, then the backend outcome, then the floor.
 
 | Reason | When it fires |
