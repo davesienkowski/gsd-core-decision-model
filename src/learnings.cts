@@ -410,11 +410,23 @@ function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
 }
 
 function learningTokens(r: LearningRecord): Set<string> {
-  return lexicalTokens(`${r.context} ${r.learning}`);
+  return lexicalTokens(`${r.context ?? ''} ${r.learning}`);
 }
 
 function pairState(a: LearningRecord, b: LearningRecord): string {
-  return `Learning A:\n${a.context}\n${a.learning}\n\nLearning B:\n${b.context}\n${b.learning}`;
+  return `Learning A:\n${a.context ?? ''}\n${a.learning}\n\nLearning B:\n${b.context ?? ''}\n${b.learning}`;
+}
+
+/**
+ * WR-05: store files are cast from any parsed JSON (`readLearningFile`), so a malformed or legacy
+ * record could carry a missing or non-string field. Only a record with a string id and learning
+ * (and a string context when it has one) is planned, so "undefined" is never tokenized or sent.
+ */
+function isPlannable(r: unknown): r is LearningRecord {
+  if (typeof r !== 'object' || r === null || Array.isArray(r)) return false;
+  const o = r as Record<string, unknown>;
+  return typeof o['id'] === 'string' && typeof o['learning'] === 'string'
+    && (o['context'] === undefined || typeof o['context'] === 'string');
 }
 
 /**
@@ -428,13 +440,14 @@ function pairState(a: LearningRecord, b: LearningRecord): string {
  * is never a candidate, because there is no overlap to rank it by.
  */
 function planSameAsDecisions(created: LearningRecord[], existing: LearningRecord[]): SameAsPlan | null {
-  if (created.length === 0 || existing.length === 0) return null;
-  const createdIds = new Set(created.map((r) => r.id));
-  const pool = existing.filter((r) => !createdIds.has(r.id));
+  const fresh = created.filter(isPlannable);
+  if (fresh.length === 0 || existing.length === 0) return null;
+  const createdIds = new Set(fresh.map((r) => r.id));
+  const pool = existing.filter((r) => isPlannable(r) && !createdIds.has(r.id));
   if (pool.length === 0) return null;
   const poolTokens = pool.map(learningTokens);
   const scored: Array<{ a: LearningRecord; b: LearningRecord; sim: number }> = [];
-  for (const a of created) {
+  for (const a of fresh) {
     const aTokens = learningTokens(a);
     const candidates: Array<{ b: LearningRecord; sim: number }> = [];
     pool.forEach((b, i) => {

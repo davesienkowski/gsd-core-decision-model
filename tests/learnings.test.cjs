@@ -1068,6 +1068,32 @@ describe('planSameAsDecisions (pure planner)', () => {
     assert.deepStrictEqual(plan.pairs[0], { id: 'c2', same_as: 'e2' });
   });
 
+  test('WR-05: malformed or legacy store records are skipped, and "undefined" is never tokenized or sent', () => {
+    // A JS lesson that legitimately mentions "undefined": every malformed record below would
+    // tokenize to "undefined" and pair with it under the old planner.
+    const c1 = rec('c1', 'Null checks', 'Guard against undefined values');
+    const malformed = [
+      { id: 'm1', context: 'x' },                      // no learning
+      { id: 'm2', context: 'y', learning: 5 },          // non-string learning
+      { id: 'm3' },                                     // neither field
+      { id: 'm4', context: 42, learning: 'guard' },     // non-string context
+      { context: 'z', learning: 'undefined guard' },    // no id
+      'a bare JSON string',
+      7,
+      null,
+    ];
+    assert.strictEqual(planSameAsDecisions([c1], malformed), null);
+    const valid = rec('v1', 'Null defaults', 'Give every optional field an explicit fallback value');
+    const plan = planSameAsDecisions([c1, { id: 'c2', context: 'q' }], [...malformed, valid]);
+    assert.deepStrictEqual(plan.pairs, [{ id: 'c1', same_as: 'v1' }]);
+    const noLiteralUndefined = (p) => p.request.requests.every((r) => r.state.split('\n').every((line) => line !== 'undefined'));
+    assert.ok(noLiteralUndefined(plan));
+    // A record without context (context is optional) is planned with an empty context line.
+    const noContext = planSameAsDecisions([rec('c3', undefined, 'Null guards for missing values')], [valid]);
+    assert.ok(noContext !== null);
+    assert.ok(noLiteralUndefined(noContext), noContext.request.requests[0].state);
+  });
+
   test('WR-04: the 0.25 boundary itself is a lexical hit; just below it is asked', () => {
     // {w, b} vs {w, c, d} is exactly 1/4; {w, b} vs {w, c, d, e} is 1/5.
     assert.strictEqual(planSameAsDecisions([rec('c1', 'w', 'b')], [rec('e1', 'w c', 'd')]), null);
