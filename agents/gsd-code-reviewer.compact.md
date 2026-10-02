@@ -124,6 +124,9 @@ grep -n -E "console\.log|debugger;|TODO|FIXME|XXX|HACK" file
 grep -n -E "catch\s*\([^)]*\)\s*\{\s*\}" file
 ```
 Severity: secrets/dangerous=Critical, debug=Info, empty catch=Warning.
+<!-- decision-model: grep-rank -->
+**Decision model (optional):** if `gsd_run decide --status` prints `"active": true`, pre-rank hits per `~/.claude/gsd-core/references/decision-model-calls.md` (Grep-hit pre-rank); judge every hit. Else scan in grep order.
+<!-- /decision-model -->
 
 **depth=standard:** per file — Read full content, apply language-specific checks, check for: functions >50 lines, deep nesting (>4 levels), missing error handling in async functions, hardcoded config values, type safety issues (TS `any`, loose Python typing). Record findings with file path, line number, description.
 

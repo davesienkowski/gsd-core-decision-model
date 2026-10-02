@@ -188,3 +188,107 @@ One call, the only `node` run step 5.6 allows (D1 still holds for the recall its
 No questions block: the edge and UI probe CLIs ask, on the proposal pass only. An `unclassified` row may carry `model_proposal`: `labels` (`label`, `decided_by`), `categories`, `confirm_with.shapes` (edge) or `confirm_with.elements` (UI). Rows, statuses and coverage are unchanged; the merge pass never asks.
 
 Show each label with its `decided_by` line. Confirm only by authoring the `confirm_with` override (requirement `shapes` in spec-phase, element `elements` in ui-phase) and re-running the proposal pass; never resolve or dismiss a row from a proposal alone. spec-phase `--auto` leaves the row unresolved (#1110) and logs the proposal; ui-phase `--auto` treats it as a hint: re-read the prose, author the override. An assumption-delta signal with `proposed_by: decision-model` carries a `decided_by` line to show.
+
+## Agent sites
+
+Used by gsd-verifier, gsd-executor, gsd-code-reviewer and gsd-ui-auditor to pre-rank grep hits, and by the flag and recall sites that follow. The model only pre-ranks, pre-labels or flags: the agent reads every item and keeps every verdict (D7, D11). Inactive, abstain, a non-zero exit or unparsable output means continue exactly as the agent's own text says. Everything above applies. The one reordering allowed is the order in which the agent reads items it still reads in full.
+
+### Calling from an agent
+
+- Host: only an agent whose `tools` line holds Write and Bash hosts a block (D26); a block never adds a tool. An agent without Write gets no block and takes today's path.
+- `gsd_run`: define it the way the agent already does for its other `gsd_run` calls (its included resolver or its inline launcher preamble). An agent with neither (gsd-ui-auditor, gsd-roadmapper, gsd-doc-verifier) pastes the block from `~/.claude/gsd-core/references/gsd-run-resolver.md` at the start of every Bash call that uses `gsd_run`; each Bash call is a fresh shell.
+- One call per scan step, as Sending says but with line slices (D27): `--mkdir`; one Write for `<dir>/questions.json`; one Write for `<dir>/items.json`; one items-mode call; `--rmdir`. No file is written per item. Zero items means no call.
+- Ids: an item's id is its own counter `k`, from 1 in the agent's own order, never a line number: `h<k>` for grep hits, `t<k>` for truths and plan criteria, `c<k>` for doc claims, `kb<k>` for knowledge-base entries, `m<k>` for profile messages. A line number goes only into `lines` and `prefix`. Two items at the same file and line are one item, sent once. Match answers to items by id only, never by text or position.
+- Items: each is `{"id": "<id>", "state_file": "<repo-relative path>", "lines": [start, end], "prefix": "<note>"}`. `state_file` is a project file, as found, relative to the project root; `lines` is the 1-based inclusive slice that holds the item and its context; `prefix` is fixed text: the words the site section gives (for a grep hit, one kind word the agent picks) plus a line number, never text copied from a file, a doc, a message or a hit. A prefix holds only ASCII letters, digits, space and `:-_()`, at most 200 characters (no quote, backslash, tab or line break). A path holding `"`, `\` or a control character is left out; that item takes today's path. Write the whole array with the Write tool, never through the shell. `decide` reads each slice raw and builds the request itself, so item text is never copied, quoted or put on a command line (ADR-1577, D24). An oversize or out-of-range slice abstains and the agent reads the item as today.
+- Text held only in the agent's head (a truth it derived, a criterion it phrased) is written once with the Write tool, each single-line text on its own line, to `<dir>/text.txt`; each item is then a one-line slice of that file.
+- Questions: fixed text; copy the site's questions block verbatim into `<dir>/questions.json`.
+- Cap: at most 60 items per call, the first 60 in the agent's own order. Items beyond the cap count as abstained and are still read and judged. Use `--budget-ms 240000` and a Bash timeout of 300000. `order_check` is not used for `noul` questions.
+- Safety (D19): a model answer never gates a security or destructive action. A secret or dangerous-function hit stays Critical whatever the answer.
+- Provenance: an answer that is applied or shown carries its `decided-by:` line. A pre-rank run also records one run line: `decided-by: decision-model (conf <lowest ok confidence>, backend <backend>); pre-ranked <k> of <n> hits; all <n> read`.
+
+Read the answers through this one-liner (a header with backend and model, then one line per id: id, status, answer or reason, `p_yes` or confidence), not as raw JSON:
+
+```bash
+node -e 'let s="";process.stdin.on("data",d=>{s+=d}).on("end",()=>{try{const r=JSON.parse(s);console.log("backend="+r.backend+" model="+r.model);for(const x of r.results){const a=Object.values(x.answers)[0]||{};console.log(x.id+" "+a.status+" "+(a.answer||a.choice||a.reason)+" "+(a.p_yes!==undefined?a.p_yes:a.confidence))}}catch(e){console.log("unparsable")}})' < '<dir>/answers.json'
+```
+
+### Grep-hit pre-rank
+
+Site `grep-rank`. When: after the grep step, before judging; zero hits means no call. One item per distinct hit, never a file per hit. For the `k`-th hit in grep order, at line `n` of `<path>`, with `<kind>` the kind of the pattern that matched, the item is `{"id": "h<k>", "state_file": "<path>", "lines": [max(1, n-5), n+5], "prefix": "grep kind: <kind> (match at line <n>)"}`: the engine reads the hit and 5 lines either side from the file, so no extra file read is needed and nothing is copied. `<kind>` is one word from the host's list, never the pattern or the matched text. gsd-verifier: `placeholder`, `empty-implementation`, `empty-data`, `empty-props`, `console-log-only`; gsd-executor: `empty-value`, `placeholder`, `todo`, `no-data-source`; gsd-code-reviewer: `secret`, `dangerous-function`, `debug-artifact`, `todo`, `empty-catch`; gsd-ui-auditor: `generic-label`, `empty-state`, `error-copy`. A hit in a file outside the project root is not sent. Question key `real`, type `noul`, fixed text by agent: gsd-verifier and gsd-executor `grep-rank.stub`, gsd-code-reviewer `grep-rank.review`, gsd-ui-auditor `grep-rank.copy`.
+
+<!-- dm:questions grep-rank.stub -->
+```json
+{"real": {"type": "noul", "instructions": "Is this match a real stub left in shipped code: placeholder text, a TODO marker, or an empty or hardcoded value that reaches rendering or user-visible output with no other code path populating it with real data? A string literal or a comment can be a stub. Answer no only when real data replaces the value, or the match is a test helper, a type default or a false match."}}
+```
+
+<!-- dm:questions grep-rank.review -->
+```json
+{"real": {"type": "noul", "instructions": "Is this match a genuine instance of what its grep pattern looks for: a credential value written into the code, a TODO, FIXME, HACK, XXX, console.log or debugger left in shipped code, a call to a dangerous function, or a catch that swallows the error? A match inside a string literal or a comment counts. Answer no only for a false match, such as an unrelated identifier, a regex exec call or a fake value in a test fixture."}}
+```
+
+<!-- dm:questions grep-rank.copy -->
+```json
+{"real": {"type": "noul", "instructions": "Is this user-facing string a generic or unhelpful label in its context (for example a bare Submit, OK, No data or Something went wrong) rather than a specific, acceptable use?"}}
+```
+
+Scope: gsd-verifier sends only its stub-pattern hits (placeholder text, empty implementations, hardcoded empty data, empty props, console.log-only); its TBD, FIXME, XXX, TODO and HACK hits are not sent, because the debt-marker gate is lexical.
+
+Order: `ok` answers of `yes` by `p_yes` descending, then abstained hits (including those beyond the cap) in grep order, then `ok` answers of `no` by `p_yes` ascending; ties keep grep order. The agent reads and judges every hit in every group. Verdicts, severities, Known Stubs and findings are the agent's own; never quote the model as evidence.
+
+Run line, once and only when the call ran: VERIFICATION.md anti-pattern section (gsd-verifier), SUMMARY.md `## Known Stubs` when it lists real stubs, else a line of `## Self-Check`; never create an empty `## Known Stubs` (gsd-executor), REVIEW.md `## Summary` (gsd-code-reviewer), UI-REVIEW.md Pillar 1 findings (gsd-ui-auditor).
+
+### Criterion flag
+
+Site `criterion-flag`. Host: gsd-roadmapper and its twin, once, after Step 5 has derived the success criteria of every phase and before Step 7 writes; zero criteria means no call. gsd-plan-checker would flag each `must_haves.truths` entry in Dimension 6, but it has no Write tool, so it gets no block (D26) and judges its truths as today.
+
+The criteria exist only in the agent's head, so write them once with the Write tool to `<dir>/text.txt`, one criterion per line (a line break inside one becomes a space), in phase order then criterion order. One item per criterion, `k` its number from 1: `{"id": "t<k>", "state_file": "<dir>/text.txt", "lines": [k, k], "prefix": "success criterion"}`. Question key `observable`, type `noul`:
+
+<!-- dm:questions criterion-flag -->
+```json
+{"observable": {"type": "noul", "instructions": "Can a user observe this criterion and does it resolve to pass or fail? Answer no for an implementation step (for example 'JWT library installed' or 'bcrypt installed') or a vague claim (for example 'works correctly', 'is properly set up', 'should feel good', 'looks reasonable')."}}
+```
+
+Gold: gsd-core/templates/phase-prompt.md:484-497 (Bad: vague acceptance criteria; Good: concrete, verifiable ones), gsd-core/templates/spec.md:64-69 (every criterion a PASS/FAIL checkbox), and the roadmapper Step 2 test (verifiable by a human using the application).
+
+Use: an `ok` `no` is only a hint to re-apply that Test to that criterion; a criterion with any other answer is judged as today. Nothing is dropped, reordered or re-worded because of the model, and the wording stays the agent's. The return summary lists each criterion the agent rewrote after a flag with its `decided-by:` line.
+
+### Doc-claim flag
+
+Site `doc-claim-flag`. Host: gsd-doc-verifier and its twin, after Step 3 has extracted the claims (so `<skip_rules>` are already applied) and before Step 4. One item per distinct doc line that holds at least one candidate, `k` numbered from 1 in line order, `n` the line: `{"id": "c<k>", "state_file": "<doc_path>", "lines": [max(1, n-1), n+1], "prefix": "doc claim at line <n> (<kinds> in <where>)"}`. `<doc_path>` is the doc as given, `<kinds>` the candidate categories on the line, space-separated words from `file-path`, `command`, `endpoint`, `function`, `dependency`, and `<where>` is `fenced-block` or `prose`. The engine reads the line and one line either side, so the doc is not copied and the claim token never goes into the prefix. Zero candidates means no call. Question key `real_claim`, type `noul`:
+
+<!-- dm:questions doc-claim-flag -->
+```json
+{"real_claim": {"type": "noul", "instructions": "Does this line hold a real claim about this repository (a path, command, endpoint, function or dependency the doc says exists here), rather than only an example, vendor quote, placeholder, template or version string?"}}
+```
+
+Use: a flag changes nothing in Step 4. Every extracted candidate gets today's filesystem check, which alone sets PASS or FAIL; the model never skips a claim, never changes `claims_checked` and never sets a verdict (D7). A candidate on a line answered `ok` `no` that FAILs gains an optional `"advisory": "possible example or placeholder; decided-by: decision-model (conf X, backend Y)"` field. The counts, the order of `failures` (line order) and every other field are unchanged. Write no file outside `<dir>` for this call.
+
+### Profile pre-label
+
+Site `profile-prelabel`. Host: the profile-user workflow, which has Write and Bash; gsd-user-profiler has `tools: Read` and gets no block (D26). When: after profile-sample, with at least one message. `decide` reads only the project root or a `--mkdir` dir, so after `--mkdir` copy the sample in (paths only, no message text):
+
+```bash
+cp '<sample>' '<dir>/messages.jsonl'
+```
+
+The copy holds the user's private messages, so once `--mkdir` ran, run `gsd_run decide --rmdir '<dir>'` before spawning the profiler on every path, abstain, error and fallback included.
+
+`<sample>` is `output_file` of the profile-sample output. One item per message, the first 120 only (this site's cap, not 60; about 200 s at 0.6 decisions per second, inside the 240000 ms budget), `k` its number from 1, which is also its line: `{"id": "m<k>", "state_file": "<dir>/messages.jsonl", "lines": [k, k], "prefix": "developer message"}`. Question key `dimension`, type `choice`, no `order_check` (a label only sets reading order):
+
+<!-- dm:questions profile-prelabel -->
+```json
+{"dimension": {"type": "choice", "instructions": "Which profiling dimension does this developer message carry the strongest signal for?", "criteria": {"communication_style": "How the developer phrases requests, instructions and feedback to Claude.", "decision_speed": "How quickly the developer chooses among options or trade-offs Claude presents.", "explanation_depth": "How much explanation the developer wants with code: understanding versus speed.", "debugging_approach": "How the developer approaches problems, errors and unexpected behavior.", "ux_philosophy": "How the developer weighs user experience, design and visual quality against function.", "vendor_philosophy": "How the developer chooses and evaluates libraries, frameworks and external services.", "frustration_triggers": "What causes visible frustration, correction or negative signals toward Claude.", "learning_style": "How the developer prefers to understand new concepts, tools or patterns.", "none": "The message carries no signal for any of these dimensions."}}}
+```
+
+Use: read the answers through the reducer. With the Write tool, write `profile-labels.json` beside the sample: `{"labels": {"m<k>": {"dimension": "<choice>", "confidence": <c>}}}` for each `ok` answer other than `none`; ids, dimensions and confidences only, never message text. No such answer means no file. A label only orders the profiler's reading; it still reads every message and owns every count, rating and quote.
+
+### KB recall
+
+Site `kb-recall`. Host: gsd-debugger, Phase 0, only on the keyword-fallback path (MemPalace absent or failing); an empty or missing `.planning/debug/knowledge-base.md` means no call. One item per entry, newest first, at most 40 (`order_check` doubles the calls), `k` its number from 1 in that order: `{"id": "kb<k>", "state_file": ".planning/debug/knowledge-base.md", "lines": [start, end], "prefix": "symptoms: <summary>"}`. `lines` runs from the entry's `## ` heading to the line before the next heading or the file end; `<summary>` is your own one-line summary of the current symptoms, at most 150 characters, in the prefix character rule (Calling from an agent), never copied from the report or the file. Question key `match`, type `choice`, `order_check` true (a position-biased pick would put a wrong hypothesis first):
+
+<!-- dm:questions kb-recall -->
+```json
+{"match": {"type": "choice", "instructions": "The state gives the current symptoms, then one prior resolved debug session. Does that session share a root cause with the symptoms, even if worded differently?", "order_check": true, "criteria": {"same_cause": "The prior session has the same root cause as the current symptoms.", "different_cause": "The prior session has a different or unrelated root cause."}}}
+```
+
+Use: see `debugger-semantic-recall.md`, Decision-model candidates.

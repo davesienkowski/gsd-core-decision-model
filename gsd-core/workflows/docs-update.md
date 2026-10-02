@@ -805,7 +805,7 @@ If any doc (canonical OR non-canonical) has `claims_failed > 0`: continue to fix
 <step name="fix_loop">
 **Skip condition:** if every doc passed verification (no `claims_failed > 0`), skip this step entirely.
 
-Otherwise, correct flagged inaccuracies by re-sending failing docs to `gsd-doc-writer` in `fix` mode (one spawn per doc, never batched), for at most 2 iterations (D-06). Each spawn carries a `<doc_assignment>` block: `type` (the doc's original type), `mode: fix`, `doc_path`, `project_context`, `existing_content` (current file content), and `failures:` — a structured array of `{line, claim, expected, actual}` objects, one per failed claim.
+Otherwise, correct flagged inaccuracies by re-sending failing docs to `gsd-doc-writer` in `fix` mode (one spawn per doc, never batched), for at most 2 iterations (D-06). Each spawn carries a `<doc_assignment>` block: `type` (the doc's original type), `mode: fix`, `doc_path`, `project_context`, `existing_content` (current file content), and `failures:` — a structured array of `{line, claim, expected, actual}` objects, one per failed claim; copy only those four keys, never the verifier's optional `advisory` field (a decision-model flag stays with the verifier result).
 
 For each doc with a failure, per iteration:
    a. Read the current file content from disk. Record the pre-fix line count:

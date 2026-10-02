@@ -564,6 +564,10 @@ For each phase, apply goal-backward:
 3. Cross-check against requirements
 4. Flag any gaps
 
+<!-- decision-model: criterion-flag -->
+**Decision model (optional):** once, after this step for every phase, run `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`); only if it prints `"active": true`, flag the criteria per `~/.claude/gsd-core/references/decision-model-calls.md` (Agent sites, Criterion flag). A flag is only a hint to re-apply the Step 2 Test; the wording stays your call. Abstain, error or inactive: go on as above.
+<!-- /decision-model -->
+
 ## Step 6: Validate Coverage
 
 Verify 100% requirement mapping:

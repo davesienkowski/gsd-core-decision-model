@@ -156,6 +156,10 @@ grep -rn "went wrong\|try again\|error occurred" src --include="*.tsx" --include
 
 If UI-SPEC exists: compare each declared CTA/empty/error copy against actual strings. Else: flag generic patterns against UX best practices.
 
+<!-- decision-model: grep-rank -->
+**Decision model (optional):** if `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`) prints `"active": true`, pre-rank hits per `~/.claude/gsd-core/references/decision-model-calls.md` (Grep-hit pre-rank); judge every hit. Else grep order.
+<!-- /decision-model -->
+
 ### Pillar 2: Visuals
 
 Check component structure, visual hierarchy indicators: Is there a clear focal point on the main screen? Are icon-only buttons paired with aria-labels/tooltips? Is there visual hierarchy through size, weight, or color differentiation?

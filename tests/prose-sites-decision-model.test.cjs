@@ -21,7 +21,8 @@
  *    questions block answers `ok` through the documented recipe, hostile state text and odd file names arrive as data,
  *    and integer criteria keys abstain invalid-request.
  *
- * SITES grows one row per site as the later tasks and chunk C4 land; the rows here are the tracer pair.
+ * SITES holds one row per site block: the workflow sites of chunk C3 and the agent sites of chunk C4 (quick 261001-x04),
+ * whose reference sections are `### ` sections under `## Agent sites`; `.compact.md` twins carry `twinOf` (D13).
  */
 'use strict';
 
@@ -49,8 +50,11 @@ const OPEN_PREFIX = '<!-- decision-model: ';
 const CLOSE_MARKER = '<!-- /decision-model -->';
 const LABEL = '**Decision model (optional):**';
 const AGENT_SITES_HEADING = '## Agent sites';
-// The shared part's own test budget (D24 allows raising it); chunk C4 caps `## Agent sites` itself.
+// This feature's own test budgets for its reference (D24: "the shared reference test cap may be raised"; these are
+// not repo budgets). The shared part, the `## Agent sites` part chunk C4 appends, and the whole file.
 const REFERENCE_CAP_BYTES = 24576;
+const AGENT_SITES_CAP_BYTES = 16384;
+const REFERENCE_FILE_CAP_BYTES = 40960;
 const SHARED_HEADINGS = [
   '## Block convention', '## Activation', '## Request shape', '## Limits',
   '## Sending', '## Reading answers', '## Provenance', '## Hard limits',
@@ -207,6 +211,123 @@ const SITES = [
     ],
     must: ['confirm_with.elements'],
   },
+  // Chunk C4 agent and agent-adjacent sites (quick 261001-x04). `refSection` names the `### ` section under
+  // `## Agent sites` that documents the site; `twinOf` marks a `.compact.md` twin (D13).
+  {
+    file: 'agents/gsd-verifier.md',
+    id: 'grep-rank',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 450,
+    keep: [
+      '**Stub classification:** A grep match is a STUB only when the value flows to rendering or user-visible output AND no other code path populates it with real data.',
+      '**Debt marker gate:** Any `TBD`, `FIXME`, or `XXX` marker in a file modified by this phase is a 🛑 BLOCKER',
+    ],
+    // IN-03: the exclusion matches the reference Scope (TODO and HACK hits are not sent either).
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank', 'not the debt or cleanup marker hits'],
+  },
+  {
+    file: 'agents/gsd-executor.md',
+    id: 'grep-rank',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 520,
+    keep: [
+      'If any stubs exist, add a `## Known Stubs` section to the SUMMARY listing each stub with its file, line, and reason.',
+      '- Placeholder text: "not available", "coming soon", "placeholder", "TODO", "FIXME"',
+    ],
+    // WR-03: the provenance run line never creates an empty Known Stubs section.
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank', 'never create an empty `## Known Stubs`'],
+  },
+  {
+    file: 'agents/gsd-code-reviewer.md',
+    id: 'grep-rank',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 420,
+    keep: ['Record findings with severity: secrets/dangerous=Critical, debug=Info, empty catch=Warning'],
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank'],
+  },
+  {
+    file: 'agents/gsd-code-reviewer.compact.md',
+    id: 'grep-rank',
+    twinOf: 'agents/gsd-code-reviewer.md',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 320,
+    keep: ['Severity: secrets/dangerous=Critical, debug=Info, empty catch=Warning.'],
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank'],
+  },
+  {
+    file: 'agents/gsd-ui-auditor.md',
+    id: 'grep-rank',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 380,
+    keep: ['**If no UI-SPEC:** Flag generic patterns against UX best practices.'],
+    must: ['Judge every hit', 'grep order', 'Grep-hit pre-rank', 'gsd-run-resolver.md'],
+  },
+  {
+    file: 'agents/gsd-ui-auditor.compact.md',
+    id: 'grep-rank',
+    twinOf: 'agents/gsd-ui-auditor.md',
+    refSection: 'Grep-hit pre-rank',
+    maxBytes: 360,
+    keep: ['Else: flag generic patterns against UX best practices.'],
+    // IN-01: the twin keeps the full block's fallback clause.
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank', 'gsd-run-resolver.md'],
+  },
+  {
+    file: 'agents/gsd-roadmapper.md',
+    id: 'criterion-flag',
+    refSection: 'Criterion flag',
+    maxBytes: 500,
+    keep: ['**Test:** Each truth should be verifiable by a human using the application.', '4. Flag any gaps'],
+    must: ['wording stays', 'Criterion flag', 'gsd-run-resolver.md', 'for every phase'],
+  },
+  {
+    file: 'agents/gsd-roadmapper.compact.md',
+    id: 'criterion-flag',
+    twinOf: 'agents/gsd-roadmapper.md',
+    refSection: 'Criterion flag',
+    maxBytes: 420,
+    keep: ['**Test:** each truth verifiable by a human using the application.', '4. Flag gaps'],
+    must: ['wording stays', 'Criterion flag', 'gsd-run-resolver.md', 'for every phase'],
+  },
+  {
+    file: 'agents/gsd-doc-verifier.md',
+    id: 'doc-claim-flag',
+    refSection: 'Doc-claim flag',
+    maxBytes: 560,
+    keep: ['Build a list of `{ line, category, claim }` tuples.', '- `claims_checked`: total claims attempted (excludes skipped claims)'],
+    must: ['never skips a claim', 'PASS/FAIL', 'advisory', 'Doc-claim flag', '`claims_checked`'],
+  },
+  {
+    file: 'agents/gsd-doc-verifier.compact.md',
+    id: 'doc-claim-flag',
+    twinOf: 'agents/gsd-doc-verifier.md',
+    refSection: 'Doc-claim flag',
+    maxBytes: 440,
+    keep: ['Extract all claims per applicable category into `{ line, category, claim }` tuples.'],
+    must: ['never skips a claim', 'PASS/FAIL', 'advisory', 'Doc-claim flag', '`claims_checked`'],
+  },
+  {
+    file: 'agents/gsd-debugger.md',
+    id: 'kb-recall',
+    refSection: 'KB recall',
+    maxBytes: 600,
+    keep: [
+      'fall back to reading `.planning/debug/knowledge-base.md` and keyword overlap when MemPalace is absent',
+      '  - Note in Current Focus: `known_pattern_candidate: "{matched slug} — {description}"`',
+    ],
+    // IN-05: the gate is the keyword-fallback path, which also runs when a MemPalace query fails.
+    must: ['hypotheses', 'keyword matches stay', 'tested first', 'KB recall', 'keyword-fallback path (MemPalace absent or failing)'],
+  },
+  {
+    file: 'gsd-core/workflows/profile-user.md',
+    id: 'profile-prelabel',
+    refSection: 'Profile pre-label',
+    maxBytes: 900,
+    keep: ['Display: "✓ Sampled N messages from M projects"', 'Display: "◆ Analyzing patterns..."'],
+    // WR-06: the decide dir holds a copy of private messages, so it is removed on every path.
+    must: ['profile-labels.json', 'Profile pre-label', 'decided-by:', 'carry on without it', "gsd_run decide --rmdir '<dir>'",
+      'abstain, error and fallback', 'private messages'],
+  },
 ];
 
 function read(rel) {
@@ -222,6 +343,13 @@ function sharedPart(text) {
   const lines = text.split('\n');
   const at = lines.indexOf(AGENT_SITES_HEADING);
   return at === -1 ? text : lines.slice(0, at).join('\n');
+}
+
+/** The reference text from the `## Agent sites` line to the end (empty when the section is missing). */
+function agentSitesPart(text) {
+  const lines = text.split('\n');
+  const at = lines.indexOf(AGENT_SITES_HEADING);
+  return at === -1 ? '' : lines.slice(at).join('\n');
 }
 
 /** Every block in `text` whose open marker is `<!-- decision-model: {id} -->`, with its extent and ordering facts. */
@@ -290,6 +418,48 @@ function recipeCall(text) {
   const m = re.exec(hits[0]);
   assert.ok(m, `the call line has the documented shape: ${hits[0]}`);
   return { flags: ['--questions', '--items', '--budget-ms'], questions: m[1], items: m[2], budgetMs: Number(m[3]), answers: m[4] };
+}
+
+/** The body of the `### {heading}` subsection of `text` (under `## Agent sites`), up to the next `##`/`###` heading. */
+function subsection(text, heading) {
+  const lines = text.split('\n');
+  const at = lines.indexOf(`### ${heading}`);
+  assert.notEqual(at, -1, `missing ### ${heading}`);
+  const next = lines.findIndex((l, i) => i > at && /^#{2,3} /.test(l));
+  return lines.slice(at + 1, next === -1 ? lines.length : next).join('\n');
+}
+
+/** The grep-rank item template the reference documents: the first `{"id": "h...}` code span of its section. */
+function grepRankTemplate(text) {
+  const m = /`(\{"id": "h<[a-z]+>"[^`]*\})`/.exec(subsection(text, 'Grep-hit pre-rank'));
+  assert.ok(m, 'the Grep-hit pre-rank section documents an item template');
+  return m[1];
+}
+
+/**
+ * Fill the grep-rank template the way an agent does for the k-th hit in its own order, at line n of `file`, of
+ * pattern kind `kind`. The template's own placeholders decide which value lands in the id: a template that numbers
+ * ids by line (`h<n>`) gives two hits on the same line number in different files the same id.
+ */
+function fillGrepItem(tpl, { k, n, file, kind }) {
+  const t = tpl.replace('[max(1, n-5), n+5]', `[${Math.max(1, n - 5)}, ${n + 5}]`)
+    .split('<k>').join(String(k)).split('<n>').join(String(n))
+    .split('<path>').join(file).split('<kind>').join(kind).split('<pattern>').join(kind);
+  return JSON.parse(t);
+}
+
+/** The bytes the engine sends for a D27 slice item: prefix, newline, then lines [start, end] of the file (to EOF). */
+function sliceState(abs, [start, end], prefix) {
+  // Lines with their own terminators, as the engine's byte scanner keeps them (no regex over the file content).
+  const raw = fs.readFileSync(abs, 'utf8');
+  const parts = [];
+  for (let from = 0; from < raw.length;) {
+    const nl = raw.indexOf('\n', from);
+    const stop = nl === -1 ? raw.length : nl + 1;
+    parts.push(raw.slice(from, stop));
+    from = stop;
+  }
+  return `${prefix}\n${parts.slice(start - 1, end).join('')}`;
 }
 
 /** The body of the `## {heading}` section of `text`, up to the next `## ` heading. */
@@ -371,8 +541,14 @@ describe('decision-model prose blocks', () => {
       });
 
       test('the reference has the site section', () => {
-        const lines = readReference().split('\n');
-        assert.ok(lines.includes(`## site: ${site.id}`), `reference needs "## site: ${site.id}"`);
+        const text = readReference();
+        if (site.refSection === undefined) {
+          assert.ok(text.split('\n').includes(`## site: ${site.id}`), `reference needs "## site: ${site.id}"`);
+          return;
+        }
+        // An agent site is a `### ` section under `## Agent sites` that names its site id.
+        assert.ok(agentSitesPart(text).split('\n').includes(`### ${site.refSection}`), `## Agent sites needs "### ${site.refSection}"`);
+        assert.ok(subsection(text, site.refSection).includes(`Site \`${site.id}\``), `### ${site.refSection} must name Site \`${site.id}\``);
       });
 
       if (site.questions ?? true) {
@@ -391,6 +567,148 @@ describe('decision-model-calls.md reference', () => {
     assert.ok(Buffer.byteLength(part, 'utf8') <= REFERENCE_CAP_BYTES, `shared part is ${Buffer.byteLength(part, 'utf8')} bytes`);
     assert.ok(!part.includes('curl'), 'prose must not call an endpoint with curl');
     assert.ok(!part.includes('/v1/chat'), 'prose must not name the chat endpoint');
+  });
+
+  test('keeps its Agent sites part and the whole file within this feature\'s own caps', () => {
+    const text = readReference();
+    const agent = agentSitesPart(text);
+    assert.ok(agent.length > 0, 'the reference has an ## Agent sites part');
+    assert.ok(Buffer.byteLength(agent, 'utf8') <= AGENT_SITES_CAP_BYTES, `Agent sites part is ${Buffer.byteLength(agent, 'utf8')} bytes, cap ${AGENT_SITES_CAP_BYTES}`);
+    assert.ok(!agent.includes('curl') && !agent.includes('/v1/chat'), 'agent sites never call an endpoint directly');
+    assert.ok(Buffer.byteLength(text, 'utf8') <= REFERENCE_FILE_CAP_BYTES, `reference is ${Buffer.byteLength(text, 'utf8')} bytes, cap ${REFERENCE_FILE_CAP_BYTES}`);
+  });
+
+  test('D13: every compact twin carries its full agent\'s site, no larger, and the tools line host rule holds (D26)', () => {
+    for (const site of SITES.filter((s) => s.twinOf !== undefined)) {
+      const twin = extractBlocks(read(site.file), site.id);
+      const full = extractBlocks(read(site.twinOf), site.id);
+      assert.equal(twin.length, 1, `${site.file} [${site.id}]`);
+      assert.equal(full.length, 1, `${site.twinOf} [${site.id}]`);
+      const fullRow = SITES.find((s) => s.file === site.twinOf && s.id === site.id);
+      assert.ok(fullRow, `${site.twinOf} [${site.id}] has its own SITES row`);
+      assert.ok(Buffer.byteLength(twin[0].text, 'utf8') <= Buffer.byteLength(full[0].text, 'utf8'), `${site.file} block is larger than its full agent's`);
+    }
+    for (const site of SITES.filter((s) => s.file.startsWith('agents/'))) {
+      const tools = /^tools: (.*)$/m.exec(read(site.file));
+      assert.ok(tools, `${site.file} has a tools line`);
+      const granted = tools[1].split(',').map((x) => x.trim());
+      assert.ok(granted.includes('Write') && granted.includes('Bash'), `${site.file} hosts a block but lacks Write or Bash (D26)`);
+    }
+  });
+
+  test('IN-07: docs-update forwards only line, claim, expected and actual to gsd-doc-writer, never the advisory flag', () => {
+    const text = read('gsd-core/workflows/docs-update.md');
+    const at = text.indexOf('<step name="fix_loop">');
+    assert.notEqual(at, -1, 'docs-update has its fix_loop step');
+    const loop = text.slice(at, text.indexOf('</step>', at));
+    assert.ok(loop.includes('a structured array of `{line, claim, expected, actual}` objects, one per failed claim'), 'today\'s failures contract');
+    assert.ok(loop.includes('copy only those four keys, never the verifier\'s optional `advisory` field'), 'the advisory field never reaches fix mode');
+  });
+
+  test('IN-06: the profile pre-label cap fits its own 240000 ms budget at about 0.6 decisions per second', () => {
+    const body = subsection(readReference(), 'Profile pre-label');
+    const m = /the first ([0-9]+) only/.exec(body);
+    assert.ok(m, 'the section states its cap');
+    const cap = Number(m[1]);
+    assert.ok(cap / 0.6 <= 240000 / 1000 - 30, `${cap} messages need about ${Math.round(cap / 0.6)} s, past the budget less a cold start`);
+  });
+
+  test('IN-05: the KB recall gate is the keyword-fallback path in the reference and the semantic-recall reference', () => {
+    assert.ok(subsection(readReference(), 'KB recall').includes('keyword-fallback path (MemPalace absent or failing)'), 'KB recall gate');
+    const recall = read('gsd-core/references/debugger-semantic-recall.md');
+    assert.ok(recall.split('\n').includes('## Decision-model candidates (optional, keyword-fallback path)'), 'semantic-recall heading');
+    assert.ok(!/only when MemPalace is absent/.test(subsection(readReference(), 'KB recall')), 'no narrower gate left');
+  });
+
+  test('IN-02: Calling from an agent names every id prefix and every agent that has no gsd_run of its own', () => {
+    const body = subsection(readReference(), 'Calling from an agent');
+    for (const id of ['`h<k>`', '`t<k>`', '`c<k>`', '`kb<k>`', '`m<k>`']) assert.ok(body.includes(id), `Ids bullet names ${id}`);
+    assert.ok(body.includes('An agent with neither (gsd-ui-auditor, gsd-roadmapper, gsd-doc-verifier)'), 'resolver bullet names all three');
+  });
+
+  test('WR-06: the profile pre-label section removes the copied private messages on every path', () => {
+    const body = subsection(readReference(), 'Profile pre-label');
+    const afterCopy = body.slice(body.indexOf("cp '<sample>' '<dir>/messages.jsonl'"));
+    assert.ok(afterCopy.includes("gsd_run decide --rmdir '<dir>'"), 'the section names the rmdir right after the copy');
+    assert.ok(afterCopy.includes('abstain, error and fallback'), 'on every path, the fallback paths included');
+    assert.ok(afterCopy.includes('private messages'), 'it says why');
+  });
+
+  test('WR-05: a doc-claim flag never leads to a skip; it only adds advisory to a FAIL entry', () => {
+    const body = subsection(readReference(), 'Doc-claim flag');
+    assert.ok(!/re-check/i.test(body), 'the reference has no re-check-to-skip path');
+    assert.ok(body.includes('changes nothing in Step 4'), 'the reference says a flag changes nothing in Step 4');
+    assert.ok(body.includes('never changes `claims_checked`'), 'the reference says the counts never change');
+    for (const rel of ['agents/gsd-doc-verifier.md', 'agents/gsd-doc-verifier.compact.md']) {
+      const [b] = extractBlocks(read(rel), 'doc-claim-flag');
+      assert.ok(b, rel);
+      assert.ok(!/re-check/i.test(b.text), `${rel}: the block has no re-check-to-skip path`);
+      assert.ok(b.text.includes('only adds `advisory` to a FAIL'), `${rel}: a flag only adds advisory to a FAIL`);
+    }
+  });
+
+  test('WR-04: the roadmapper criterion flag runs once, inside Step 5 of the execution flow, not in the per-phase method', () => {
+    for (const rel of ['agents/gsd-roadmapper.md', 'agents/gsd-roadmapper.compact.md']) {
+      const lines = read(rel).split('\n');
+      const open = lines.indexOf('<!-- decision-model: criterion-flag -->');
+      assert.notEqual(open, -1, rel);
+      const step5 = lines.indexOf('## Step 5: Derive Success Criteria');
+      const step6 = lines.indexOf('## Step 6: Validate Coverage');
+      assert.ok(step5 !== -1 && step6 > step5, `${rel} has Steps 5 and 6`);
+      assert.ok(open > step5 && open < step6, `${rel}: the block (line ${open + 1}) must sit in Step 5 (lines ${step5 + 1}-${step6 + 1})`);
+      const perPhase = lines.indexOf('</goal_backward_phases>');
+      assert.ok(perPhase !== -1 && open > perPhase, `${rel}: the block is outside the per-phase method`);
+    }
+  });
+
+  test('WR-03: the executor run line goes to an existing section, never into a new empty Known Stubs section', () => {
+    const grep = subsection(readReference(), 'Grep-hit pre-rank');
+    const run = grep.split('\n').find((l) => l.startsWith('Run line'));
+    assert.ok(run, 'a Run line paragraph');
+    assert.ok(run.includes('`## Self-Check`'), 'the executor run line has a destination that always exists');
+    assert.ok(run.includes('never create an empty `## Known Stubs`'), 'the run line never creates an empty Known Stubs section');
+    // IN-04: every destination is a section the host's own template has.
+    assert.ok(run.includes('REVIEW.md `## Summary` (gsd-code-reviewer)'), 'the code-reviewer run line goes in REVIEW.md ## Summary');
+    assert.ok(read('agents/gsd-code-reviewer.md').split('\n').includes('## Summary'), 'the REVIEW.md template has ## Summary');
+    assert.ok(!run.includes('quick-depth findings'), 'no invented REVIEW.md section');
+  });
+
+  test('WR-02: every agent-site prefix is fixed vocabulary plus a line number, within the stated character rule', () => {
+    const text = readReference();
+    const agent = agentSitesPart(text);
+    assert.ok(agent.includes('ASCII letters, digits, space and `:-_()`'), 'the Items bullet states the prefix character rule');
+    assert.ok(agent.includes('never text copied from a file, a doc, a message or a hit'), 'the Items bullet forbids copied text');
+    const grep = subsection(text, 'Grep-hit pre-rank');
+    assert.ok(!grep.includes('<pattern>'), 'a grep prefix never carries the pattern text');
+    // Each grep-rank host names its own kinds; a prefix is built from one of them.
+    const kinds = {};
+    for (const agentName of ['gsd-verifier', 'gsd-executor', 'gsd-code-reviewer', 'gsd-ui-auditor']) {
+      const m = new RegExp(`${agentName}: ((?:\`[a-z-]+\`(?:, )?)+)`).exec(grep);
+      assert.ok(m, `### Grep-hit pre-rank lists the kinds for ${agentName}`);
+      kinds[agentName] = m[1].split(', ').map((k) => k.slice(1, -1));
+    }
+    for (const required of ['secret', 'todo', 'debug-artifact', 'generic-label', 'placeholder']) {
+      assert.ok(Object.values(kinds).some((list) => list.includes(required)), `some host has kind ${required}`);
+    }
+    const PREFIX_RULE = /^[A-Za-z0-9 :\-_()]{0,200}$/;
+    // Fill every documented item template with the worst-case values its section allows and check the prefix.
+    const longest = Object.values(kinds).flat().reduce((a, b) => (b.length > a.length ? b : a), '');
+    const prefixes = [
+      fillGrepItem(grepRankTemplate(text), { k: 60, n: 99999, file: 'src/a.ts', kind: longest }).prefix,
+    ];
+    const docTpl = /`(\{"id": "c<k>"[^`]*\})`/.exec(subsection(text, 'Doc-claim flag'));
+    assert.ok(docTpl, 'doc-claim item template');
+    prefixes.push(JSON.parse(docTpl[1].replace('<doc_path>', 'README.md').replace('[max(1, n-1), n+1]', '[1, 3]')
+      .split('<k>').join('1').split('<n>').join('99999').replace('<kinds>', 'file-path command endpoint function dependency')
+      .replace('<where>', 'fenced-block')).prefix);
+    for (const [heading, idp] of [['Criterion flag', 't<k>'], ['Profile pre-label', 'm<k>']]) {
+      const m = new RegExp(`\`(\\{"id": "${idp}"[^\`]*\\})\``).exec(subsection(text, heading));
+      assert.ok(m, `${heading} item template`);
+      prefixes.push(JSON.parse(m[1].split('<dir>').join('/tmp/d').replace('[k, k]', '[1, 1]').split('<k>').join('1')).prefix);
+    }
+    for (const p of prefixes) assert.ok(PREFIX_RULE.test(p), `prefix breaks the character rule: ${JSON.stringify(p)}`);
+    const kb = subsection(text, 'KB recall');
+    assert.ok(kb.includes('prefix character rule'), 'the KB summary follows the prefix character rule');
   });
 
   test('has every shared heading and the literals the sites rely on', () => {
@@ -564,7 +882,8 @@ describe('decide CLI tracer (real engine, sandboxed)', () => {
   });
 
   test('every dm:questions block of the reference is answered ok through the documented recipe', async (t) => {
-    const stub = await startStub(t);
+    // `same_cause` (kb-recall) is named so an order_check block picks the same key in both option orders and answers ok.
+    const stub = await startStub(t, ['same_cause']);
     const box = enabledSandbox(t, stub);
     const reference = readReference();
     const call = recipeCall(reference);
@@ -587,7 +906,8 @@ describe('decide CLI tracer (real engine, sandboxed)', () => {
         else assert.ok(Object.keys(questions[key].criteria).includes(a.choice), `${id}.${key}: ${a.choice}`);
         if (questions[key].type === 'score') assert.equal(typeof a.score, 'number', `${id}.${key}`);
       }
-      assert.equal(stub.requests.length - before, Object.keys(questions).length, `${id}: one call per question`);
+      const wantCalls = Object.values(questions).reduce((n, q) => n + (q.order_check === true ? 2 : 1), 0);
+      assert.equal(stub.requests.length - before, wantCalls, `${id}: one call per question, two with order_check`);
       assert.ok(stub.requests.slice(before).every((r) => r.state === `state for ${id}`), id);
       const removed = await runCli(['decide', '--rmdir', dir], box);
       assert.equal(removed.exitCode, 0, removed.stderr);
@@ -654,6 +974,64 @@ describe('decide CLI tracer (real engine, sandboxed)', () => {
     assert.equal(out.results[2].answers.type.status, 'ok');
     assert.deepEqual(stub.requests.map((r) => r.state), [adr, '# Guide\n']);
     assert.ok(!fs.existsSync(path.join(cwd, 'PWNED')) && !fs.existsSync(path.join(cwd, 'corpus', 'PWNED')), 'nothing ran');
+  });
+
+  test('CR-01: grep-rank items built from the reference template keep unique ids for hits on the same line number in different files', async (t) => {
+    const stub = await startStub(t);
+    const box = enabledSandbox(t, stub);
+    const { cwd } = box;
+    const reference = readReference();
+    const tpl = grepRankTemplate(reference);
+    const dir = await mkdir(t, box);
+    fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+    const numbered = (count, hit) => Array.from({ length: count }, (_, i) => (i + 1 === 12 ? hit : `const v${i + 1} = ${i + 1};`)).join('\n') + '\n';
+    fs.writeFileSync(path.join(cwd, 'src', 'a.ts'), numbered(20, 'const items = [];'));
+    // b.ts has 14 lines, so the slice [7, 17] of its hit at line 12 runs past the end of the file.
+    fs.writeFileSync(path.join(cwd, 'src', 'b.ts'), numbered(14, 'const rows = [];'));
+    const hits = [{ file: 'src/a.ts', n: 12 }, { file: 'src/b.ts', n: 12 }];
+    const items = hits.map((h, i) => fillGrepItem(tpl, { k: i + 1, n: h.n, file: h.file, kind: 'stub' }));
+    assert.equal(new Set(items.map((it) => it.id)).size, items.length, `ids repeat: ${items.map((it) => it.id)}`);
+    for (const it of items) assert.deepEqual(Object.keys(it), ['id', 'state_file', 'lines', 'prefix']);
+    const questions = questionBlocks(reference).find((q) => q.id === 'grep-rank.stub').questions;
+    fs.writeFileSync(path.join(dir, 'questions.json'), JSON.stringify(questions));
+    fs.writeFileSync(path.join(dir, 'items.json'), JSON.stringify(items));
+    const res = await runCli(['decide', '--questions', path.join(dir, 'questions.json'), '--items', path.join(dir, 'items.json'), '--budget-ms', '240000'], box);
+    assert.equal(res.exitCode, 0, res.stderr);
+    const out = jsonOut(res);
+    assert.deepEqual(out.results.map((r) => r.id), items.map((it) => it.id), 'one result per hit, in item order');
+    for (const r of out.results) assert.equal(r.answers.real.status, 'ok', `${r.id}: ${JSON.stringify(r.answers.real)}`);
+    assert.deepEqual(stub.requests.map((r) => r.state), items.map((it) => sliceState(path.join(cwd, it.state_file), it.lines, it.prefix)),
+      'each state is the prefix plus that file\'s own slice, the past-the-end slice cut at the end of the file');
+  });
+
+  test('WR-01: a hardcoded secret in a string literal is asked whether it is what the pattern looks for, never de-ranked as a literal', async (t) => {
+    const reference = readReference();
+    const blocks = questionBlocks(reference);
+    for (const id of ['grep-rank.review', 'grep-rank.stub']) {
+      const q = blocks.find((b) => b.id === id).questions.real.instructions;
+      assert.ok(!/\bnot a string literal\b|\bnot a (?:string literal|comment)\b/i.test(q), `${id} must not tell the model a literal or comment is not real: ${q}`);
+      assert.ok(/string literal or a comment (?:counts|can be a stub)/.test(q), `${id} must say a literal or comment can be the real thing: ${q}`);
+    }
+    const review = blocks.find((b) => b.id === 'grep-rank.review').questions;
+    assert.match(review.real.instructions, /credential value/, 'the review question names the secret case');
+    assert.match(review.real.instructions, /TODO, FIXME/, 'the review question names the leftover-marker case');
+
+    const stub = await startStub(t, ['yes']);
+    const box = enabledSandbox(t, stub);
+    const { cwd } = box;
+    const dir = await mkdir(t, box);
+    fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+    const secretLine = 'const password = "hunter2";';
+    fs.writeFileSync(path.join(cwd, 'src', 'config.ts'), `'use strict';\n\n${secretLine}\nmodule.exports = { password };\n`);
+    const item = fillGrepItem(grepRankTemplate(reference), { k: 1, n: 3, file: 'src/config.ts', kind: 'secret' });
+    fs.writeFileSync(path.join(dir, 'questions.json'), JSON.stringify(review));
+    fs.writeFileSync(path.join(dir, 'items.json'), JSON.stringify([item]));
+    const res = await runCli(['decide', '--questions', path.join(dir, 'questions.json'), '--items', path.join(dir, 'items.json'), '--budget-ms', '240000'], box);
+    assert.equal(res.exitCode, 0, res.stderr);
+    assert.equal(stub.requests.length, 1);
+    assert.equal(stub.requests[0].question, review.real.instructions, 'the secret hit is asked the review question');
+    assert.ok(stub.requests[0].state.includes(secretLine), 'the literal reaches the model as data');
+    assert.equal(jsonOut(res).results[0].answers.real.answer, 'yes');
   });
 
   test('negative control: a questions file with integer criteria keys abstains invalid-request and makes no call', async (t) => {
