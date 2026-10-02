@@ -157,7 +157,7 @@ grep -rn "went wrong\|try again\|error occurred" src --include="*.tsx" --include
 If UI-SPEC exists: compare each declared CTA/empty/error copy against actual strings. Else: flag generic patterns against UX best practices.
 
 <!-- decision-model: grep-rank -->
-**Decision model (optional):** if `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`) prints `"active": true`, pre-rank hits per `~/.claude/gsd-core/references/decision-model-calls.md` (Grep-hit pre-rank); judge every hit.
+**Decision model (optional):** if `gsd_run decide --status` (resolver: `~/.claude/gsd-core/references/gsd-run-resolver.md`) prints `"active": true`, pre-rank hits per `~/.claude/gsd-core/references/decision-model-calls.md` (Grep-hit pre-rank); judge every hit. Else grep order.
 <!-- /decision-model -->
 
 ### Pillar 2: Visuals

@@ -268,7 +268,8 @@ const SITES = [
     refSection: 'Grep-hit pre-rank',
     maxBytes: 360,
     keep: ['Else: flag generic patterns against UX best practices.'],
-    must: ['judge every hit', 'Grep-hit pre-rank', 'gsd-run-resolver.md'],
+    // IN-01: the twin keeps the full block's fallback clause.
+    must: ['judge every hit', 'grep order', 'Grep-hit pre-rank', 'gsd-run-resolver.md'],
   },
   {
     file: 'agents/gsd-roadmapper.md',
