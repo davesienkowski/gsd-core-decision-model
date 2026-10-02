@@ -617,9 +617,13 @@ function endpointHost(baseUrl: unknown): string | null {
  * information, never as proof of certainty: when only the emitted letter is
  * listed, every letter gets the same bound and the confidence is 1/n, which is
  * below any usable floor. With a full 20-entry list the bound is tiny and a
- * confident answer stays confident. This only ever lowers the confidence the
- * renormalized Tev1 protocol reports. When no offered letter is listed at all,
- * every label is 0.
+ * confident answer stays confident. The bound adds mass only to absent letters,
+ * so a LISTED letter never gets a higher probability than the renormalized Tev1
+ * protocol gives it. An absent letter, though, rises from 0 to the bound, so this
+ * function alone would let an emitted letter missing from its own list score up
+ * to 1/n; the openai-letter backend refuses such a self-contradictory reply as
+ * invalid-output before calling it (D22). When no offered letter is listed at
+ * all, every label is 0.
  */
 function letterProbabilities(topLogprobs: unknown, labels: readonly string[]): Record<string, number> {
   const valid = new Set(labels);
@@ -751,6 +755,12 @@ const openaiLetterBackend: Backend = Object.freeze({
     if (!isPlainObject(letterTok) || (letterTok['token'] as string).trim() !== emitted) return bad();
     const top = letterTok['top_logprobs'];
     if (!Array.isArray(top) || top.length === 0) return bad();
+    // D22 (WR-04 residual): a letter the server sampled but did not list among its own
+    // top alternatives contradicts its own evidence, so the reply is invalid output
+    // rather than a probability made up for it.
+    const listsEmitted = top.some((e) => isPlainObject(e) && typeof e['token'] === 'string' && e['token'].trim() === emitted
+      && typeof e['logprob'] === 'number' && Number.isFinite(e['logprob']));
+    if (!listsEmitted) return bad();
 
     const byLabel = letterProbabilities(top, labels);
     // Probabilities stay keyed by option key, in the ORIGINAL key order.

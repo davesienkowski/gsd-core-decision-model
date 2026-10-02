@@ -1128,6 +1128,20 @@ describe('contract edges', () => {
     assert.equal(answers.q.probabilities.b, 0.001, 'the absent letter gets its upper bound, not 0');
   });
 
+  test('D22 (WR-04 residual): an emitted letter absent from its own top_logprobs is invalid-output, even at a 0.5 floor', async () => {
+    // The re-review repro: the list says A is likelier than B, yet the content is B.
+    // Bounding B by the smallest listed entry used to give confidence 0.5, which passed a 0.5 floor.
+    const top = [{ token: 'The', logprob: -0.1 }, { token: 'A', logprob: -2 }];
+    const { answers } = await ask({ q: choiceQ(['x', 'y'], { min_confidence: 0.5 }) }, { handler: () => ({ ok: true, status: 200, body: completion('B', top) }) });
+    assert.deepEqual(answers.q, { status: 'abstain', reason: 'invalid-output' });
+    // Padded tokens still count as the emitted letter being listed.
+    const listed = await ask({ q: choiceQ(['x', 'y'], { min_confidence: 0.5 }) }, {
+      handler: () => ({ ok: true, status: 200, body: completion('B', [{ token: ' B', logprob: Math.log(0.9) }, { token: 'A', logprob: Math.log(0.1) }]) }),
+    });
+    assert.equal(listed.answers.q.status, 'ok');
+    assert.equal(listed.answers.q.choice, 'y');
+  });
+
   test('WR-05: leading whitespace tokens are skipped; the letter token supplies the probabilities', async () => {
     const lp = (p) => Math.log(p);
     const { answers } = await ask({ q: choiceQ(['a', 'b']) }, {
