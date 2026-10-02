@@ -1081,6 +1081,34 @@ describe('learnings copy CLI stays deterministic off or unreachable (261001-o30 
     return { res, dir };
   }
 
+  test('WR-01: with the capability off, each malformed store file is warned about once, as without the model', () => {
+    const { runNode } = require('./helpers/process-seam.cjs');
+    const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+    const { TEST_ENV_BASE } = require('./helpers.cjs');
+    const dir = createTempProject();
+    const home = makeTempDir();
+    cleanups.push(dir, home);
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'), '{}');
+    fs.writeFileSync(path.join(dir, '.planning', 'LEARNINGS.md'),
+      '# L\n\n## Lessons\n\n### Network retries\nUse jitter and exponential backoff when retrying a flaky network call\n');
+    const store = path.join(home, '.gsd', 'knowledge');
+    learningsWrite({
+      source_project: 'other',
+      context: 'Retry policy for flaky network calls',
+      learning: 'Retry network calls with exponential backoff and jitter',
+    }, { storeDir: store });
+    fs.writeFileSync(path.join(store, 'zz-00.json'), '{ not json');
+    const r = runNode([path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs'), 'learnings', 'copy'], {
+      cwd: dir,
+      env: { ...process.env, ...TEST_ENV_BASE, HOME: home, USERPROFILE: home, GSD_HOME: home },
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
+    assert.strictEqual(r.exitCode, 0, r.stderr);
+    assert.deepStrictEqual(JSON.parse(r.stdout), { total: 1, created: 1, skipped: 0 });
+    const warnings = r.stderr.split('\n').filter((l) => l.startsWith('Warning: skipping malformed file') && l.includes('zz-00.json'));
+    assert.strictEqual(warnings.length, 1, r.stderr);
+  });
+
   test('decision_model disabled prints exactly { total, created, skipped }', () => {
     const { res, dir } = copyIn({ enabled: false }, true);
     assert.strictEqual(res.success, true, res.error);

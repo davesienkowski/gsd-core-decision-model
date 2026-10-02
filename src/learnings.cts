@@ -462,6 +462,9 @@ function copyWithSameAsSuggestions(
   const createdIds: string[] = [];
   const result: CopyWithSuggestionsResult = learningsCopyFromProject(planningDir, { ...opts, createdIds });
   if (createdIds.length === 0) return result;
+  // WR-01: the gate comes before any extra store read, so the off path does exactly the copy's I/O.
+  const decide = resolveSiteDecide(opts);
+  if (decide === null) return result;
   const created: LearningRecord[] = [];
   for (const id of createdIds) {
     const record = learningsRead(id, opts);
@@ -469,8 +472,6 @@ function copyWithSameAsSuggestions(
   }
   const plan = planSameAsDecisions(created, learningsList(opts));
   if (plan === null) return result;
-  const decide = resolveSiteDecide(opts);
-  if (decide === null) return result;
   const response = decide(plan.request);
   const suggestions: SameAsSuggestion[] = [];
   let anyOk = false;
