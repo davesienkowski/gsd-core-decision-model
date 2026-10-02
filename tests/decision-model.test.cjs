@@ -906,6 +906,17 @@ describe('contract edges', () => {
     assert.deepEqual(optionsOf(h.calls[0]).map((o) => o.key), ['level_2', '01', '1.5', '-1'], 'author order is preserved');
   });
 
+  test('IN-03: a bad key wins over the option count, matching the documented precedence', async () => {
+    const criteria = { ...criteriaOf(24), 'bad key': 'x' };
+    const { answers, h } = await ask({
+      bad: { type: 'choice', instructions: 'Pick.', criteria },
+      many: { type: 'choice', instructions: 'Pick.', criteria: criteriaOf(25) },
+    });
+    assert.deepEqual(answers.bad, { status: 'abstain', reason: 'invalid-request' });
+    assert.deepEqual(answers.many, { status: 'abstain', reason: 'too-many-options' });
+    assert.equal(h.calls.length, 0);
+  });
+
   test('structural faults throw the TypeError', async () => {
     const proto = JSON.parse('{"state":"s","questions":{"__proto__":{"type":"noul","instructions":"x"}}}');
     const cases = [

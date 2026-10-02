@@ -306,13 +306,15 @@ function questionProblem(q: unknown): QuestionProblem {
   const criteria = q['criteria'];
   if (!isPlainObject(criteria)) return ABSTAIN_REASON.INVALID_REQUEST;
   const keys = Object.keys(criteria);
-  if (keys.length > MAX_CRITERIA) return ABSTAIN_REASON.TOO_MANY_OPTIONS;
-  if (keys.length < 2) return ABSTAIN_REASON.INVALID_REQUEST;
+  // Malformed criteria are invalid-request before the count is judged, which is the
+  // precedence COMMANDS.md documents (IN-03).
   for (const k of keys) {
     if (!isValidKey(k) || INTEGER_KEY_RE.test(k)) return ABSTAIN_REASON.INVALID_REQUEST;
     const d = criteria[k];
     if (typeof d !== 'string' || d.length === 0) return ABSTAIN_REASON.INVALID_REQUEST;
   }
+  if (keys.length < 2) return ABSTAIN_REASON.INVALID_REQUEST;
+  if (keys.length > MAX_CRITERIA) return ABSTAIN_REASON.TOO_MANY_OPTIONS;
   return null;
 }
 
