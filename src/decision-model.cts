@@ -1012,17 +1012,15 @@ interface DecideSyncOpts {
   _spawn?: SpawnFn;
 }
 
-function childSpawnOptions(input: string, budgetMs: number): Json {
-  return {
-    input,
-    encoding: 'utf8',
-    timeout: budgetMs,
-    killSignal: 'SIGKILL',
-    maxBuffer: MAX_ENVELOPE_BYTES,
-    windowsHide: true,
-    shell: false,
-  };
-}
+// Shared child options. Call sites spread this constant so `windowsHide: true` is visible
+// at the spawn (tests/windows-robustness.test.cjs completeness guard, bug #685).
+const CHILD_SPAWN_OPTS = {
+  encoding: 'utf8',
+  killSignal: 'SIGKILL',
+  maxBuffer: MAX_ENVELOPE_BYTES,
+  windowsHide: true,
+  shell: false,
+};
 
 /** The question type for the log, only when it is one of the three known values. */
 function loggedType(q: unknown): string | null {
@@ -1126,7 +1124,7 @@ function decideSync(request: unknown, opts: DecideSyncOpts): DecisionResponse {
     res = spawn(
       process.execPath,
       [__filename, '--decide-child'],
-      childSpawnOptions(JSON.stringify({ mode: 'decide', request, config: cfg.config }), budget),
+      { ...CHILD_SPAWN_OPTS, input: JSON.stringify({ mode: 'decide', request, config: cfg.config }), timeout: budget },
     );
   } catch {
     return without(ABSTAIN_REASON.INVALID_OUTPUT);
@@ -1184,7 +1182,7 @@ function statusSync(opts: StatusOpts): StatusResult {
       const res = spawn(
         process.execPath,
         [__filename, '--probe-child'],
-        childSpawnOptions(JSON.stringify({ config: c }), probeMs + SPAWN_MARGIN_MS),
+        { ...CHILD_SPAWN_OPTS, input: JSON.stringify({ config: c }), timeout: probeMs + SPAWN_MARGIN_MS },
       );
       if (!res.error && !res.signal && res.status === 0 && typeof res.stdout === 'string') {
         const parsed: unknown = JSON.parse(res.stdout);
