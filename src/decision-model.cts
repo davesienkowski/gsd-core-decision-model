@@ -596,6 +596,10 @@ function sameConfigValue(a: unknown, b: unknown): boolean {
  * cloned repository can never choose the remote host that receives the state or
  * the user's API key, whatever the backend.
  *
+ * D25: when the backend in effect sends a credential, base_url is honored only
+ * from user scope, loopback included: the project value is ignored (and listed
+ * unless it equals the user-scope value, or the default when the user set none).
+ *
  * D23: a backend that sends a credential (`sendsCredential` in BACKENDS, today
  * jev) is honored only when the user chose it. A project or workstream backend
  * that sends a credential and differs from the user-scope backend is ignored: the
@@ -636,13 +640,19 @@ function resolveDecisionConfig(cwd: string): ConfigValidation {
     const dotKey = `decision_model.${k}`;
     if (k === 'base_url') {
       // D22. Project presence is judged on the raw config.json files, as below.
+      // D25: when the backend in effect sends a credential, a project base_url is
+      // ignored even when it is loopback, so a cloned repository cannot point the key
+      // at a local port it controls. `backend` precedes `base_url` in CONFIG_DEFAULTS,
+      // so raw.backend is already resolved here.
       const fromProject = resolveConfigKey(dotKey, { config: {}, cwd, registry: {}, quiet: true });
       const fromUser = _getNestedConfigValue(userDefaults, dotKey);
-      if (fromProject.found && isLoopbackUrl(fromProject.value)) {
+      const keySending = sendsCredential(raw['backend'] === undefined ? CONFIG_DEFAULTS.backend : raw['backend']);
+      if (fromProject.found && !keySending && isLoopbackUrl(fromProject.value)) {
         raw[k] = fromProject.value;
         continue;
       }
-      if (fromProject.found && !(fromUser.found && sameConfigValue(fromProject.value, fromUser.value))) ignored.push(dotKey);
+      const userValue = fromUser.found ? fromUser.value : CONFIG_DEFAULTS.base_url;
+      if (fromProject.found && !sameConfigValue(fromProject.value, userValue)) ignored.push(dotKey);
       raw[k] = fromUser.found ? fromUser.value : undefined;
       continue;
     }

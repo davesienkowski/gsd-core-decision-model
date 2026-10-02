@@ -1511,3 +1511,44 @@ describe('D24 items mode engine (decideItemsSync)', () => {
     assert.equal(calls[0], 2500);
   });
 });
+
+describe('D25 a credential-bearing backend takes base_url from user scope only, loopback included', () => {
+  test('user-scope jev and a project loopback base_url: the project port is ignored and reported', (t) => {
+    const project = scopes(t, { enabled: true, model: 'x', base_url: 'http://127.0.0.1:5999' }, { backend: 'jev' });
+    const r = mod.resolveDecisionConfig(project);
+    assert.equal(r.config.backend, 'jev');
+    assert.equal(r.config.base_url, 'http://127.0.0.1:1234', 'the default stands in, not the project port');
+    assert.deepEqual(r.ignored_project_keys, ['decision_model.base_url']);
+    assert.deepEqual(mod.statusSync({ cwd: project }).ignored_project_keys, ['decision_model.base_url']);
+  });
+
+  test('the user-scope base_url is used, and a project copy of it is not reported', (t) => {
+    const user = { backend: 'jev', base_url: 'http://127.0.0.1:7001' };
+    const other = mod.resolveDecisionConfig(scopes(t, { base_url: 'http://localhost:7002' }, user));
+    assert.equal(other.config.base_url, 'http://127.0.0.1:7001');
+    assert.deepEqual(other.ignored_project_keys, ['decision_model.base_url']);
+    const copy = mod.resolveDecisionConfig(scopes(t, { backend: 'jev', base_url: 'http://127.0.0.1:7001' }, user));
+    assert.equal(copy.config.base_url, 'http://127.0.0.1:7001');
+    assert.deepEqual(copy.ignored_project_keys, []);
+    const defaultCopy = mod.resolveDecisionConfig(scopes(t, { base_url: 'http://127.0.0.1:1234' }, { backend: 'jev' }));
+    assert.deepEqual(defaultCopy.ignored_project_keys, [], 'a project copy of the default is not an override');
+  });
+
+  test('a backend that sends no credential still takes a project loopback base_url (D22 unchanged)', (t) => {
+    const r = mod.resolveDecisionConfig(scopes(t, { base_url: 'http://127.0.0.1:5999' }, { backend: 'openai-letter' }));
+    assert.equal(r.config.base_url, 'http://127.0.0.1:5999');
+    assert.deepEqual(r.ignored_project_keys, []);
+  });
+
+  test('the key never reaches the project port: the child is told the user-scope URL', (t) => {
+    const project = scopes(t, { enabled: true, model: 'x', base_url: 'http://127.0.0.1:5999' }, { backend: 'jev', base_url: 'http://127.0.0.1:7001' });
+    let payload = null;
+    mod.decideSync(
+      { state: 's', questions: { q: { type: 'noul', instructions: 'Is it?' } } },
+      { cwd: project, _spawn: (cmd, args, opts) => { payload = JSON.parse(opts.input); return { status: 1 }; } },
+    );
+    assert.equal(payload.config.backend, 'jev');
+    assert.equal(payload.config.base_url, 'http://127.0.0.1:7001');
+    assert.ok(!JSON.stringify(payload).includes('5999'));
+  });
+});

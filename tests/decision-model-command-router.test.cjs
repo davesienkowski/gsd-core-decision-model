@@ -536,7 +536,8 @@ describe('gsd-tools decide (full contract)', () => {
     const file = writeRequest(project, CHOICE_REQUEST);
     const env = { GITHUB_TOKEN: 'ghp_must_not_leak', OPENROUTER_API_KEY: 'or-user-key' };
     // D23: the user chose jev, so the project's copy of it is honored and not reported.
-    const userDefaults = { decision_model: { backend: 'jev' } };
+    // D25: jev sends a key, so its base_url comes from user scope too; the project copy is equal.
+    const userDefaults = { decision_model: { backend: 'jev', base_url: stub.url } };
     const res = await runDecide(t, ['--request', file], { cwd: project, env, userDefaults });
     assert.equal(res.code, 0, `stderr: ${res.stderr}`);
     assert.equal(JSON.parse(res.stdout).results[0].answers.kind.status, 'ok');
@@ -625,9 +626,11 @@ describe('gsd-tools decide (full contract)', () => {
   test('D23 positive control: a user-scope jev is used and sends the key; a project copy changes nothing', async (t) => {
     const stub = await startStub(t, () => ({ status: 200, body: { answers: { kind: { choice: 'prd', confidence: 0.95, probabilities: { prd: 0.95 } } } } }));
     const env = { OPENROUTER_API_KEY: 'or-user-key' };
+    // D25: a key-sending backend takes base_url from user scope only, so the second case's
+    // project values are copies of the user's (a differing project base_url is the D25 test).
     const cases = [
       { userDm: { backend: 'jev', base_url: stub.url }, projectDm: { enabled: true, model: 'jev-model' } },
-      { userDm: { backend: 'jev' }, projectDm: { enabled: true, model: 'jev-model', backend: 'jev', base_url: stub.url } },
+      { userDm: { backend: 'jev', base_url: stub.url }, projectDm: { enabled: true, model: 'jev-model', backend: 'jev', base_url: stub.url } },
     ];
     for (const [i, c] of cases.entries()) {
       const project = makeProject(t, c.projectDm);
@@ -644,6 +647,39 @@ describe('gsd-tools decide (full contract)', () => {
       const status = await runDecide(t, ['--status'], { cwd: project, env, userDefaults });
       assert.deepEqual(JSON.parse(status.stdout).ignored_project_keys, [], `case ${i}`);
     }
+  });
+
+  test('D25: the verifier residual, user-scope jev with a project loopback base_url, never sends the key to the project port', async (t) => {
+    const SECRET = 'or-secret-d25-91ad3e';
+    const env = { OPENROUTER_API_KEY: SECRET };
+    const answer = { status: 200, body: { answers: { kind: { choice: 'prd', confidence: 0.95, probabilities: { prd: 0.95 } } } } };
+    const projectPort = await startStub(t, () => answer);
+    const userPort = await startStub(t, () => answer);
+
+    // The user chose jev and its URL; the cloned project points base_url at a port it controls.
+    const project = makeProject(t, { enabled: true, model: 'jev-model', backend: 'jev', base_url: projectPort.url });
+    const file = writeRequest(project, CHOICE_REQUEST);
+    const userDefaults = { decision_model: { backend: 'jev', base_url: userPort.url } };
+    const res = await runDecide(t, ['--request', file], { cwd: project, env, userDefaults });
+    assert.equal(res.code, 0, `stderr: ${res.stderr}`);
+    const out = JSON.parse(res.stdout);
+    assert.equal(out.endpoint_host, userPort.host);
+    assert.equal(out.results[0].answers.kind.status, 'ok');
+    assert.equal(projectPort.requests.length, 0, 'the project port received nothing');
+    assert.equal(userPort.requests.length, 1);
+    assert.equal(userPort.requests[0].headers.authorization, `Bearer ${SECRET}`);
+    const status = await runDecide(t, ['--status'], { cwd: project, env, userDefaults });
+    assert.deepEqual(JSON.parse(status.stdout).ignored_project_keys, ['decision_model.base_url']);
+
+    // With no user base_url, every fetch is recorded and none goes to the project port.
+    const rec = egressRecorder(t);
+    const res2 = await runDecide(t, ['--request', file], { cwd: project, env: { ...env, ...rec.env }, userDefaults: { decision_model: { backend: 'jev' } } });
+    assert.equal(res2.code, 0, `stderr: ${res2.stderr}`);
+    assert.equal(JSON.parse(res2.stdout).endpoint_host, '127.0.0.1:1234');
+    const egress = rec.read();
+    assert.ok(egress.length > 0, 'the call was attempted, so the assertion below can fail');
+    for (const r of egress) assert.notEqual(new URL(r.url).host, projectPort.host, 'no request to the project port');
+    assert.equal(projectPort.requests.length, 0);
   });
 
   test('IN-04: the engine child reads its call budget from the payload; a spent budget makes no call', async (t) => {
