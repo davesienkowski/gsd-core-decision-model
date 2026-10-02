@@ -1683,7 +1683,7 @@ Answer small closed decision questions (`choice`, `noul` for yes/no, `score`) th
 - `{"type": "noul", "instructions": "<yes/no question>"}`
 - `{"type": "score", "instructions": "<question>", "criteria": {"<levelKey>": "<description>"}}` with levels ordered low to high
 
-`choice` and `score` need 2 to 24 criteria, and a `noul` question has none. Ids, question keys and criteria keys match `/^[A-Za-z0-9_.-]{1,64}$/` and are never `__proto__`, `constructor` or `prototype`. A question may add `min_confidence` (a number in `[0.5, 1]`, replacing the configured floor for that question) and `order_check` (a boolean; ask again with the options reversed). There are at most 256 questions in one request.
+`choice` and `score` need 2 to 24 criteria, and a `noul` question has none. Ids, question keys and criteria keys match `/^[A-Za-z0-9_.-]{1,64}$/` and are never `__proto__`, `constructor` or `prototype`. A criteria key must not be a plain integer such as `0`, `1` or `10` (use `level_1`): JavaScript orders integer-like keys first and ascending, which would silently reorder the options or score levels, so such a question abstains `invalid-request`. A question may add `min_confidence` (a number in `[0.5, 1]`, replacing the configured floor for that question) and `order_check` (a boolean; ask again with the options reversed). There are at most 256 questions in one request.
 
 **Response.** `{"backend", "model", "endpoint_host", "min_confidence", "results": [{"id", "answers": {"<key>": A}}]}`, with results in request order and the id `default` for the single form. `min_confidence` is the configured floor. An answer `A` is one of:
 

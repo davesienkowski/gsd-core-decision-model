@@ -57,6 +57,8 @@ function fakeHttp(handler) {
       method: opts.method,
       headers: opts.headers || {},
       timeoutMs: opts.timeoutMs,
+      // The exact wire text: key order in a parsed object can differ from the bytes sent.
+      raw: opts.body === undefined ? null : opts.body,
       body: opts.body === undefined ? null : JSON.parse(opts.body),
     };
     calls.push(call);
@@ -496,6 +498,33 @@ describe('jev backend (fake HTTP only)', () => {
     assert.equal(a.n.status, 'ok');
   });
 
+  test('CR-02: order_check reverses the criteria on the wire, not only in the parsed object', async () => {
+    const h = fakeHttp(() => ({
+      ok: true, status: 200, body: { answers: { c: { choice: 'first', confidence: 0.9, probabilities: { first: 0.9 } } } },
+    }));
+    const criteria = { first: 'one', second: 'two', third: 'three' };
+    await mod.decide(
+      req({ c: { type: 'choice', instructions: 'Pick.', criteria, order_check: true } }),
+      { config: jevCfg(), http: h.http, env: ENV },
+    );
+    assert.equal(h.calls.length, 2);
+    const at = (raw, k) => raw.indexOf(`"${k}":`);
+    const [fwd, rev] = h.calls.map((c) => c.raw);
+    assert.ok(at(fwd, 'first') < at(fwd, 'second') && at(fwd, 'second') < at(fwd, 'third'), fwd);
+    assert.ok(at(rev, 'third') < at(rev, 'second') && at(rev, 'second') < at(rev, 'first'), rev);
+    assert.notEqual(fwd, rev, 'the reversed request differs from the first');
+  });
+
+  test('CR-02: integer-keyed jev criteria abstain invalid-request with zero calls (the reversal could not happen)', async () => {
+    const h = fakeHttp(jevHandler({}));
+    const r = await mod.decide(
+      req({ c: { type: 'choice', instructions: 'Pick.', criteria: { 1: 'first', 2: 'second' }, order_check: true } }),
+      { config: jevCfg(), http: h.http, env: ENV },
+    );
+    assert.deepEqual(r.results[0].answers.c, { status: 'abstain', reason: 'invalid-request' });
+    assert.equal(h.calls.length, 0);
+  });
+
   test('order_check abstains order-inconsistent when the reversed answer remaps to a different level', async () => {
     // The same raw answer both times; under reversal raw level 2 is original level 0.
     const raw = { score: 1.6, confidence: 0.7, probabilities: { 0: 0.1, 1: 0.2, 2: 0.7 } };
@@ -642,6 +671,21 @@ describe('contract edges', () => {
     assert.equal(answers.ctor.reason, 'invalid-request');
     assert.equal(answers.spaced.reason, 'invalid-request');
     assert.equal(answers.good.status, 'ok');
+  });
+
+  test('CR-02: canonical-integer criteria keys abstain invalid-request; other numeric-looking keys are kept in order', async () => {
+    const { answers, h } = await ask({
+      score: { type: 'score', instructions: 'Rate.', criteria: JSON.parse('{"none":"zero","1":"one","2":"two"}') },
+      zero: { type: 'choice', instructions: 'Pick.', criteria: { 0: 'x', a: 'y' } },
+      big: { type: 'choice', instructions: 'Pick.', criteria: { 10: 'x', 9: 'y' } },
+      kept: { type: 'score', instructions: 'Rate.', criteria: JSON.parse('{"level_2":"hi","01":"lo","1.5":"mid","-1":"neg"}') },
+    }, { handler: pickByKey((call, i, options) => options[0].key) });
+    assert.deepEqual(answers.score, { status: 'abstain', reason: 'invalid-request' });
+    assert.deepEqual(answers.zero, { status: 'abstain', reason: 'invalid-request' });
+    assert.deepEqual(answers.big, { status: 'abstain', reason: 'invalid-request' });
+    assert.equal(answers.kept.status, 'ok');
+    assert.equal(h.calls.length, 1);
+    assert.deepEqual(optionsOf(h.calls[0]).map((o) => o.key), ['level_2', '01', '1.5', '-1'], 'author order is preserved');
   });
 
   test('structural faults throw the TypeError', async () => {

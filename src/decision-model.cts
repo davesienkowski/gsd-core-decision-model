@@ -63,6 +63,13 @@ const API_KEY_ENV_RE = /^[A-Z][A-Z0-9_]*_API_KEY$/;
  */
 const USER_SCOPE_KEYS: ReadonlySet<string> = new Set(['allow_remote', 'api_key_env']);
 const RESERVED_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+/**
+ * D21 (CR-02): a canonical-integer criteria key. JavaScript (and JSON.parse) puts
+ * such keys first in ascending numeric order, whatever order the author wrote,
+ * which would silently reorder options and score levels and make an order_check
+ * reversal a no-op. Such keys are rejected; use e.g. `level_1`.
+ */
+const INTEGER_KEY_RE = /^(0|[1-9][0-9]*)$/;
 
 const ABSTAIN_REASON = Object.freeze({
   CAPABILITY_OFF: 'capability-off',
@@ -281,7 +288,7 @@ function questionProblem(q: unknown): QuestionProblem {
   if (keys.length > MAX_CRITERIA) return ABSTAIN_REASON.TOO_MANY_OPTIONS;
   if (keys.length < 2) return ABSTAIN_REASON.INVALID_REQUEST;
   for (const k of keys) {
-    if (!isValidKey(k)) return ABSTAIN_REASON.INVALID_REQUEST;
+    if (!isValidKey(k) || INTEGER_KEY_RE.test(k)) return ABSTAIN_REASON.INVALID_REQUEST;
     const d = criteria[k];
     if (typeof d !== 'string' || d.length === 0) return ABSTAIN_REASON.INVALID_REQUEST;
   }
